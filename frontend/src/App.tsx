@@ -1,7 +1,7 @@
-import { FormEvent, ReactNode, useMemo, useState } from 'react'
+import { FormEvent, ReactNode, useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import './analysis.css'
-import { Activity, ArrowLeft, ArrowUpRight, Check, CircleHelp, Clock3, Command, ExternalLink, LoaderCircle, Skull, Swords, Trophy } from 'lucide-react'
+import { Activity, ArrowLeft, ArrowUpRight, Check, CircleHelp, Clock3, Command, ExternalLink, LoaderCircle, Moon, Skull, Sun, Swords, Trophy } from 'lucide-react'
 
 type Health = { status: string; service: string }
 type Fight = {
@@ -31,8 +31,9 @@ type Report = {
   bosses: Boss[]
   fights: Fight[]
 }
-type FightAnalysis = { fight: Fight; tables: Record<string, unknown>; actors: Array<{ id: number; name: string; type: string; subType: string | null }> }
-type PlayerInsight = { name: string; className: string | null; notes: string[] }
+type Actor = { id: number; name: string; type: string; subType: string | null }
+type FightAnalysis = { fight: Fight; tables: Record<string, unknown>; events: Record<string, unknown>; player_details: unknown; actors: Actor[] }
+type PlayerStats = Actor & { damage: number | null; dps: number | null; healing: number | null; hps: number | null; damageTaken: number | null; friendlyDamage: number | null; deaths: Array<Record<string, unknown>>; interrupts: Array<Record<string, unknown>>; consumables: string[]; gear: Array<Record<string, unknown>>; auras: string[] }
 
 async function getHealth(): Promise<Health> {
   const response = await fetch('/api/health')
@@ -72,18 +73,124 @@ async function fetchFightAnalysis(code: string, fightId: number): Promise<FightA
   return payload
 }
 
-function tableRows(value: unknown): Array<Record<string, unknown>> {
+function parseJSON(value: unknown): unknown {
   let parsed = value
   if (typeof parsed === 'string') {
-    try { parsed = JSON.parse(parsed) } catch { return [] }
+    try { parsed = JSON.parse(parsed) } catch { return value }
   }
-  if (Array.isArray(parsed)) return parsed.filter((row): row is Record<string, unknown> => Boolean(row) && typeof row === 'object')
-  if (!parsed || typeof parsed !== 'object') return []
-  const table = parsed as Record<string, unknown>
-  for (const key of ['data', 'entries', 'actors', 'table']) {
-    if (Array.isArray(table[key])) return (table[key] as unknown[]).filter((row): row is Record<string, unknown> => Boolean(row) && typeof row === 'object')
+  return parsed
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function tableRows(value: unknown, depth = 0): Array<Record<string, unknown>> {
+  const parsed = parseJSON(value)
+  if (depth > 7 || parsed === null || parsed === undefined) return []
+  if (Array.isArray(parsed)) {
+    const records = parsed.filter(isRecord)
+    if (records.some((row) => ['name', 'id', 'guid', 'total', 'amount', 'timestamp', 'sourceID', 'targetID', 'type'].some((key) => row[key] !== undefined))) return records
+    return records.flatMap((row) => tableRows(row, depth + 1))
+  }
+  if (!isRecord(parsed)) return []
+  for (const key of ['data', 'entries', 'events', 'actors', 'table', 'series', 'groups', 'sources', 'targets', 'players']) {
+    if (parsed[key] !== undefined) {
+      const rows = tableRows(parsed[key], depth + 1)
+      if (rows.length) return rows
+    }
   }
   return []
+}
+
+function eventDataAvailable(value: unknown): boolean {
+  if (value === null || value === undefined) return false
+  const parsed = parseJSON(value)
+  if (isRecord(parsed) && 'data' in parsed) return parsed.data !== null && parsed.data !== undefined
+  return true
+}
+
+function allRecords(value: unknown, output: Array<Record<string, unknown>> = [], depth = 0): Array<Record<string, unknown>> {
+  const parsed = parseJSON(value)
+  if (depth > 9 || parsed === null || parsed === undefined) return output
+  if (Array.isArray(parsed)) {
+    for (const item of parsed) allRecords(item, output, depth + 1)
+  } else if (isRecord(parsed)) {
+    output.push(parsed)
+    for (const item of Object.values(parsed)) allRecords(item, output, depth + 1)
+  }
+  return output
+}
+
+function actorId(row: Record<string, unknown>, role?: 'source' | 'target'): number | null {
+  const nested = role && isRecord(row[role]) ? row[role] as Record<string, unknown> : null
+  const value = (role === 'source' ? row.sourceID ?? row.sourceId : role === 'target' ? row.targetID ?? row.targetId : undefined)
+    ?? row.id ?? row.actorID ?? row.actorId ?? nested?.id
+  const id = Number(value)
+  return Number.isFinite(id) ? id : null
+}
+
+function actorName(row: Record<string, unknown>, role?: 'source' | 'target'): string {
+  const nested = role && isRecord(row[role]) ? row[role] as Record<string, unknown> : null
+  const value = (role === 'source' ? row.sourceName : role === 'target' ? row.targetName : undefined)
+    ?? row.name ?? nested?.name
+  return typeof value === 'string' ? value : 'Unknown'
+}
+
+function rowForActor(value: unknown, actor: Actor, role?: 'source' | 'target'): Record<string, unknown> | undefined {
+  return tableRows(value).find((row) => actorId(row, role) === actor.id || (actorId(row, role) === null && actorName(row, role) === actor.name))
+}
+
+function numericValue(row: Record<string, unknown> | undefined, keys: string[]): number | null {
+  for (const key of keys) {
+    const value = row?.[key]
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+    if (isRecord(value)) {
+      const nested = Object.values(value).find((item) => typeof item === 'number')
+      if (typeof nested === 'number') return nested
+    }
+  }
+  return null
+}
+
+function makePlayerStats(analysis: FightAnalysis): PlayerStats[] {
+  const participants = new Set(analysis.fight.friendly_players)
+  const deaths = tableRows(analysis.events.deaths)
+  const interrupts = tableRows(analysis.events.interrupts)
+  const combatantEvents = tableRows(analysis.events.combatant_info)
+  const durationSeconds = analysis.fight.duration_ms / 1000
+  return analysis.actors
+    .filter((actor) => actor.type === 'Player' && participants.has(actor.id))
+    .map((actor) => {
+      const damageRow = rowForActor(analysis.tables.damage, actor, 'source')
+      const healingRow = rowForActor(analysis.tables.healing, actor, 'source')
+      const takenRow = rowForActor(analysis.tables.damage_taken, actor, 'target')
+      const friendlyRow = rowForActor(analysis.tables.friendly_damage, actor, 'source')
+      const castsRow = rowForActor(analysis.tables.casts, actor, 'source')
+      const actorDeathEvents = deaths.filter((event) => actorId(event, 'target') === actor.id)
+      const actorInterrupts = interrupts.filter((event) => actorId(event, 'source') === actor.id)
+      const actorCombatant = combatantEvents.find((event) => actorId(event, 'source') === actor.id || actorId(event, 'target') === actor.id)
+      const details = allRecords(analysis.player_details).find((record) => Number(record.id ?? record.actorID ?? record.actorId) === actor.id && (Array.isArray(record.gear) || isRecord(record.combatantInfo) || isRecord(record.combatantinfo)))
+      const combatantInfo = isRecord(details?.combatantInfo) ? details.combatantInfo : isRecord(details?.combatantinfo) ? details.combatantinfo : actorCombatant
+      const gear = Array.isArray(details?.gear) ? details.gear.filter(isRecord) : Array.isArray(combatantInfo?.gear) ? combatantInfo.gear.filter(isRecord) : []
+      const auras = Array.isArray(combatantInfo?.auras) ? combatantInfo.auras.map((aura) => isRecord(aura) ? String((isRecord(aura.ability) ? aura.ability.name : undefined) ?? aura.name ?? '') : '').filter(Boolean) : []
+      const consumablePattern = /potion|flask|elixir|food|feast|rune|healthstone|mana stone|wizard oil|sharpening|consecrated|free action|protection potion/i
+      const consumables = [...new Set(allRecords(castsRow).map((record) => record.name).filter((name): name is string => typeof name === 'string' && consumablePattern.test(name)))]
+      return {
+        ...actor,
+        damage: numericValue(damageRow, ['total', 'amount', 'damage']),
+        dps: numericValue(damageRow, ['dps']) ?? (numericValue(damageRow, ['total', 'amount', 'damage']) !== null && durationSeconds > 0 ? (numericValue(damageRow, ['total', 'amount', 'damage']) as number) / durationSeconds : null),
+        healing: numericValue(healingRow, ['total', 'amount', 'healing']),
+        hps: numericValue(healingRow, ['hps']) ?? (numericValue(healingRow, ['total', 'amount', 'healing']) !== null && durationSeconds > 0 ? (numericValue(healingRow, ['total', 'amount', 'healing']) as number) / durationSeconds : null),
+        damageTaken: numericValue(takenRow, ['total', 'amount', 'damageTaken', 'damage']),
+        friendlyDamage: numericValue(friendlyRow, ['total', 'amount', 'damage']),
+        deaths: actorDeathEvents,
+        interrupts: actorInterrupts,
+        consumables,
+        gear,
+        auras,
+      }
+    })
 }
 
 function displayValue(value: unknown): string {
@@ -108,10 +215,30 @@ function formatDate(date: string): string {
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' }).format(new Date(date)) + ' UTC'
 }
 
+function AppearanceControls() {
+  const [theme, setTheme] = useState(() => localStorage.getItem('htl-theme') === 'light' ? 'light' : 'dark')
+  const [fontScale, setFontScale] = useState(() => {
+    const stored = Number(localStorage.getItem('htl-font-scale'))
+    return Number.isFinite(stored) && stored >= 0.9 && stored <= 1.3 ? stored : 1
+  })
+  useEffect(() => {
+    document.body.dataset.theme = theme
+    document.documentElement.style.setProperty('--font-scale', String(fontScale))
+    localStorage.setItem('htl-theme', theme)
+    localStorage.setItem('htl-font-scale', String(fontScale))
+  }, [theme, fontScale])
+  return <div className="appearance-controls" aria-label="Display settings">
+    <label className="font-scale-control" title="Adjust interface text size"><span>A</span><input aria-label="Text size" type="range" min="0.9" max="1.3" step="0.05" value={fontScale} onChange={(event) => setFontScale(Number(event.target.value))} /><span className="large-a">A</span></label>
+    <button className="theme-toggle" type="button" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}>{theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}<span>{theme === 'dark' ? 'LIGHT' : 'DARK'}</span></button>
+  </div>
+}
+
 function Header({ connected }: { connected?: boolean }) {
   return <header className="topbar">
     <a className="brand" href="/"><span className="brand-mark"><Command size={17} /></span><span>hellotherelogs</span><span className="version">LOCAL / 0.2</span></a>
+    <div className="topbar-tools"><AppearanceControls />
     {connected !== undefined && <div className="system-status"><span className={`status-dot ${connected ? 'online' : ''}`} /> API {connected ? 'CONNECTED' : 'OFFLINE'}</div>}
+    </div>
   </header>
 }
 
@@ -161,35 +288,10 @@ function ReportPage({ code }: { code: string }) {
   const [selectedFightId, setSelectedFightId] = useState<number | null>(null)
   const analysisFightId = selectedFightId ?? report.data?.fights.find((fight) => fight.encounter_id > 0)?.fight_id ?? null
   const analysis = useQuery({ queryKey: ['fight-analysis', code, analysisFightId], queryFn: () => fetchFightAnalysis(code, analysisFightId as number), enabled: analysisFightId !== null, retry: 1 })
-  const improvementNotes = useMemo(() => {
-    if (!analysis.data) return []
-    const deaths = tableRows(analysis.data.tables.deaths)
-    const interrupts = tableRows(analysis.data.tables.interrupts)
-    const notes: string[] = []
-    if (deaths.length) notes.push(`${deaths.length} death record${deaths.length === 1 ? '' : 's'} in this pull. Review each death’s damage taken and the seconds before it to distinguish lethal mechanics from healing or defensive gaps.`)
-    if (interrupts.length) notes.push(`Interrupt activity is available for ${interrupts.length} row${interrupts.length === 1 ? '' : 's'}. Compare interrupted casts with dangerous casts that completed before assigning kick coverage.`)
-    if (!notes.length) notes.push('This pull has no death or interrupt rows to review. Use the damage, healing, damage taken, and buff uptime tables to find the next discussion point.')
-    return notes
-  }, [analysis.data])
-  const playerInsights = useMemo<PlayerInsight[]>(() => {
-    if (!analysis.data) return []
-    const deaths = tableRows(analysis.data.tables.deaths)
-    const interrupts = tableRows(analysis.data.tables.interrupts)
-    const rowForActor = (rows: Array<Record<string, unknown>>, id: number) => rows.find((row) => Number(row.id ?? row.actorID ?? row.sourceID ?? row.targetID) === id)
-    return analysis.data.actors.filter((actor) => actor.type === 'Player').map((actor) => {
-      const death = rowForActor(deaths, actor.id)
-      const interrupt = rowForActor(interrupts, actor.id)
-      const deathCount = Number(death?.total ?? death?.count ?? 0)
-      const interruptCount = Number(interrupt?.total ?? interrupt?.count ?? 0)
-      const notes = deathCount > 0
-        ? [`${deathCount} recorded death${deathCount === 1 ? '' : 's'}: review the damage and mechanic in the seconds before each death, then check defensive timing.`]
-        : ['No death is recorded for this pull.']
-      notes.push(interruptCount > 0
-        ? `${interruptCount} recorded interrupt${interruptCount === 1 ? '' : 's'}: compare these with the assigned dangerous casts to spot coverage gaps.`
-        : 'No interrupt is recorded. If assigned to interrupt, review missed casts and ability availability.')
-      return { name: actor.name, className: actor.subType, notes }
-    })
-  }, [analysis.data])
+  const playerStats = useMemo(() => analysis.data ? makePlayerStats(analysis.data) : [], [analysis.data])
+  const deathEvents = analysis.data ? tableRows(analysis.data.events.deaths) : []
+  const interruptEvents = analysis.data ? tableRows(analysis.data.events.interrupts) : []
+  const metricLeaders = (key: 'damage' | 'healing' | 'damageTaken' | 'friendlyDamage') => [...playerStats].filter((player) => player[key] !== null).sort((a, b) => (b[key] ?? 0) - (a[key] ?? 0)).slice(0, 5)
 
   return <main className="shell report-shell">
     <Header connected />
@@ -231,15 +333,24 @@ function ReportPage({ code }: { code: string }) {
         {analysis.isLoading && <div className="minor-loading"><LoaderCircle className="spin" size={14} /> LOADING DAMAGE, HEALING, SURVIVABILITY, INTERRUPTS & UPTIME</div>}
         {analysis.isError && <div className="inline-error">Encounter analysis unavailable: {analysis.error.message}</div>}
         {analysis.data && <>
-          <div className="review-notes"><h3>Review points</h3>{improvementNotes.map((note) => <p key={note}>{note}</p>)}<small>These are evidence-led prompts, not player grades. Encounter mechanics and assigned roles matter.</small></div>
-          <div className="player-review"><h3>Player review</h3><div className="player-review-grid">{playerInsights.map((player) => <article className="player-review-card" key={player.name}><div><strong>{player.name}</strong><span>{player.className ?? 'Player'}</span></div>{player.notes.map((note) => <p key={note}>{note}</p>)}</article>)}</div></div>
+          <div className="review-notes"><h3>Pull review</h3><p>Showing {playerStats.length} friendly players recorded in this pull. Compare output alongside assignments, role and encounter mechanics.</p><small>Suggestions use observable log evidence. Missing data is shown as unavailable; a zero is only shown when the event data is present.</small></div>
+          <div className="leader-grid">
+            <LeaderCard title="Top damage" players={metricLeaders('damage')} metric="damage" tint="blue" />
+            <LeaderCard title="Top healing" players={metricLeaders('healing')} metric="healing" tint="mint" />
+            <LeaderCard title="Most damage taken" players={metricLeaders('damageTaken')} metric="damageTaken" tint="pink" />
+            <LeaderCard title="Friendly fire" players={metricLeaders('friendlyDamage')} metric="friendlyDamage" tint="lavender" />
+          </div>
+          <article className="analysis-card roster-card"><div className="card-heading"><div><h3>Player performance</h3><p>Per pull totals and event counts</p></div><span>{playerStats.length} PLAYERS</span></div>
+            {playerStats.length === 0 ? <p className="analysis-empty">No friendly player roster was returned for this pull.</p> : <div className="analysis-table-wrap"><table><thead><tr><th>Player</th><th>Damage</th><th>DPS</th><th>Healing</th><th>HPS</th><th>Damage taken</th><th>Friendly damage</th><th>Deaths</th><th>Interrupts</th></tr></thead><tbody>{playerStats.map((player) => <tr key={player.id}><td><strong>{player.name}</strong><small>{player.subType ?? 'Player'}</small></td><td>{formatMetric(player.damage)}</td><td>{formatMetric(player.dps)}</td><td>{formatMetric(player.healing)}</td><td>{formatMetric(player.hps)}</td><td>{formatMetric(player.damageTaken)}</td><td>{formatMetric(player.friendlyDamage)}</td><td>{eventDataAvailable(analysis.data?.events.deaths) ? player.deaths.length : '—'}</td><td>{eventDataAvailable(analysis.data?.events.interrupts) ? player.interrupts.length : '—'}</td></tr>)}</tbody></table></div>}
+          </article>
+          <div className="detail-grid">
+            <EventCard title="Deaths" rows={deathEvents} unavailable={!eventDataAvailable(analysis.data.events.deaths)} kind="death" fight={analysis.data.fight} />
+            <EventCard title="Interrupts" rows={interruptEvents} unavailable={!eventDataAvailable(analysis.data.events.interrupts)} kind="interrupt" fight={analysis.data.fight} />
+          </div>
+          <article className="analysis-card roster-card"><div className="card-heading"><div><h3>Gear, auras & consumables</h3><p>Only fields present in the Warcraft Logs response are shown</p></div></div><div className="equipment-grid">{playerStats.map((player) => <section className="equipment-player" key={player.id}><h4>{player.name} <span>{player.subType ?? ''}</span></h4>{player.gear.length ? <ul>{player.gear.map((item, index) => <li key={index}><strong>{String(item.name ?? item.itemName ?? `Item ${item.id ?? ''}`)}</strong><span>{item.itemLevel ? `ilvl ${displayValue(item.itemLevel)}` : ''}{item.permanentEnchantName ? ` · ${String(item.permanentEnchantName)}` : ''}{item.temporaryEnchantName ? ` · ${String(item.temporaryEnchantName)}` : ''}{Array.isArray(item.gems) ? ` · ${item.gems.map((gem) => isRecord(gem) ? String(gem.name ?? gem.itemLevel ?? 'gem') : String(gem)).join(', ')}` : ''}</span></li>)}</ul> : <p className="analysis-empty">Gear detail unavailable</p>}{player.auras.length > 0 && <p className="equipment-meta"><b>Auras at pull</b> · {player.auras.join(', ')}</p>}<p className="equipment-meta"><b>Consumable casts</b> · {player.consumables.length ? player.consumables.join(', ') : 'No matching casts returned'}</p></section>)}</div></article>
           <div className="analysis-grid">
-            <AnalysisTable title="Damage done" value={analysis.data.tables.damage} />
-            <AnalysisTable title="Healing done" value={analysis.data.tables.healing} />
-            <AnalysisTable title="Damage taken" value={analysis.data.tables.damage_taken} />
-            <AnalysisTable title="Deaths" value={analysis.data.tables.deaths} />
-            <AnalysisTable title="Interrupts" value={analysis.data.tables.interrupts} />
-            <AnalysisTable title="Buff uptime" value={analysis.data.tables.buff_uptimes} />
+            <AnalysisTable title="Ability uptime" value={analysis.data.tables.buff_uptimes} />
+            <AnalysisTable title="Cast activity" value={analysis.data.tables.casts} />
           </div>
         </>}
       </section>
@@ -252,6 +363,17 @@ function ReportPage({ code }: { code: string }) {
     </>}
     <Footer />
   </main>
+}
+
+function formatMetric(value: number | null): string { return value === null ? '—' : Math.round(value).toLocaleString() }
+
+function LeaderCard({ title, players, metric, tint }: { title: string; players: PlayerStats[]; metric: 'damage' | 'healing' | 'damageTaken' | 'friendlyDamage'; tint: string }) {
+  const max = Math.max(1, ...players.map((player) => player[metric] ?? 0))
+  return <article className="leader-card"><h3><span className={`leader-dot tint-${tint}`} />{title}</h3>{players.length === 0 ? <p className="analysis-empty">Metric unavailable</p> : players.map((player, index) => <div className="leader-row" key={player.id}><span className="leader-rank">{index + 1}</span><span className="leader-name">{player.name}<i><b style={{ width: `${Math.max(3, 100 * (player[metric] ?? 0) / max)}%` }} /></i></span><strong>{formatMetric(player[metric])}</strong></div>)}</article>
+}
+
+function EventCard({ title, rows, unavailable, kind, fight }: { title: string; rows: Array<Record<string, unknown>>; unavailable: boolean; kind: 'death' | 'interrupt'; fight: Fight }) {
+  return <article className="analysis-card event-card"><div className="card-heading"><div><h3>{title}</h3><p>Encounter event timeline</p></div><span>{unavailable ? 'UNAVAILABLE' : `${rows.length} EVENTS`}</span></div>{unavailable ? <p className="analysis-empty">The log response did not include this event data.</p> : rows.length === 0 ? <p className="analysis-empty">No {kind} events were recorded for this pull.</p> : <div className="event-list">{rows.map((row, index) => { const time = Number(row.timestamp); const relative = Number.isFinite(time) ? Math.max(0, time - fight.start_time_ms) : null; return <div className="event-row" key={`${index}-${String(row.timestamp ?? '')}`}><time>{relative === null ? '—' : formatDuration(relative)}</time><strong>{actorName(row, kind === 'death' ? 'target' : 'source')}</strong><span>{String((isRecord(row.ability) && row.ability.name) || row.abilityName || row.name || (kind === 'death' ? 'Death' : 'Interrupt'))}</span>{kind === 'death' && <small>{String((isRecord(row.killingAbility) && row.killingAbility.name) || row.killerName || '')}</small>}</div>})}</div>}</article>
 }
 
 function AnalysisTable({ title, value }: { title: string; value: unknown }) {

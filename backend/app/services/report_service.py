@@ -60,9 +60,14 @@ query HelloThereLogsFightAnalysis($code: String!, $fightId: Int!) {
       damage: table(dataType: DamageDone, fightIDs: [$fightId], viewBy: Source)
       healing: table(dataType: Healing, fightIDs: [$fightId], viewBy: Source)
       damageTaken: table(dataType: DamageTaken, fightIDs: [$fightId], viewBy: Target)
-      deaths: table(dataType: Deaths, fightIDs: [$fightId])
+      friendlyDamage: table(dataType: DamageDone, fightIDs: [$fightId], hostilityType: Friendlies, viewBy: Source)
+      casts: table(dataType: Casts, fightIDs: [$fightId], viewBy: Source)
+      deaths: events(dataType: Deaths, fightIDs: [$fightId], limit: 10000, useActorIDs: true, useAbilityIDs: true) { data nextPageTimestamp }
       interrupts: table(dataType: Interrupts, fightIDs: [$fightId], viewBy: Source)
       buffUptimes: table(dataType: Buffs, fightIDs: [$fightId], viewBy: Target)
+      interruptEvents: events(dataType: Interrupts, fightIDs: [$fightId], limit: 10000, useActorIDs: true, useAbilityIDs: true) { data nextPageTimestamp }
+      combatantInfo: events(dataType: CombatantInfo, fightIDs: [$fightId], limit: 10000, useActorIDs: true, useAbilityIDs: true) { data nextPageTimestamp }
+      playerDetails: playerDetails(fightIDs: [$fightId], includeCombatantInfo: true)
     }
   }
 }
@@ -113,23 +118,39 @@ class ReportService:
         fight = next((item for item in report["fights"] if item["fight_id"] == fight_id), None)
         if fight is None:
             raise ReportNotFoundError("Fight was not found in this report.")
-        cache_key = f"analysis:v1:{code}:{fight_id}"
+        cache_key = f"analysis:v2:{code}:{fight_id}"
         cached = self.cache.get(cache_key)
         if cached is not None:
             return cached
         data = await self.client.query(FIGHT_ANALYSIS_QUERY, {"code": code, "fightId": fight_id})
         raw_report = self._report_from_response(data)
+        participant_ids = set(fight.get("friendly_players") or [])
+        all_actors = (raw_report.get("masterData") or {}).get("actors", [])
+        participants = [
+            actor for actor in all_actors
+            if isinstance(actor, dict)
+            and actor.get("type") == "Player"
+            and actor.get("id") in participant_ids
+        ]
         result = {
             "fight": fight,
             "tables": {
                 "damage": raw_report.get("damage"),
                 "healing": raw_report.get("healing"),
                 "damage_taken": raw_report.get("damageTaken"),
+                "friendly_damage": raw_report.get("friendlyDamage"),
+                "casts": raw_report.get("casts"),
                 "deaths": raw_report.get("deaths"),
                 "interrupts": raw_report.get("interrupts"),
                 "buff_uptimes": raw_report.get("buffUptimes"),
             },
-            "actors": (raw_report.get("masterData") or {}).get("actors", []),
+            "events": {
+                "deaths": raw_report.get("deaths"),
+                "interrupts": raw_report.get("interruptEvents"),
+                "combatant_info": raw_report.get("combatantInfo"),
+            },
+            "player_details": raw_report.get("playerDetails"),
+            "actors": participants,
         }
         self.cache.set(cache_key, result)
         return result
