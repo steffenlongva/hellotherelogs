@@ -1,6 +1,6 @@
-# Logloom
+# HelloThereLogs
 
-Logloom is a self-hosted Warcraft Logs Classic Fresh analysis application. This is Phase 1: the API/frontend foundation, server-side WCL authentication transport, deployment, and health check. The report dashboard is intentionally not implemented yet.
+HelloThereLogs  is a self-hosted Warcraft Logs Classic Fresh analysis application. This is Phase 1: the API/frontend foundation, server-side WCL authentication transport, deployment, and health check. The report dashboard is intentionally not implemented yet.
 
 ## Start on Unraid or Docker
 
