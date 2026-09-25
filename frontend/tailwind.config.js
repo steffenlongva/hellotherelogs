@@ -1,0 +1,2 @@
+/** @type {import('tailwindcss').Config} */
+export default { content: ['./index.html', './src/**/*.{ts,tsx}'], theme: { extend: { colors: { ink: '#15171c', panel: '#1c1f26', secondary: '#222631', border: '#303642', text: '#e9e7e1', muted: '#969ca8', pink: '#e7a7c3', lavender: '#b9b0df', mint: '#9fd6c0', blue: '#9ec8e8', yellow: '#e4cf91', peach: '#e4aa91', danger: '#df929d' }, fontFamily: { mono: ['"JetBrains Mono"', 'monospace'] } } }, plugins: [] }
