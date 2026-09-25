@@ -1,0 +1,19 @@
+.analysis-section{margin-top:26px;border:1px solid #303642;border-radius:6px;background:#1c1f26}
+.analysis-controls{padding:18px 20px;display:flex;align-items:center;gap:14px;border-bottom:1px solid #303642}
+.analysis-controls label{font-size:9px;letter-spacing:.08em;color:#969ca8}
+.analysis-controls select{max-width:100%;min-width:260px;height:36px;background:#15171c;border:1px solid #414754;border-radius:4px;color:#e9e7e1;padding:0 10px;font:10px 'JetBrains Mono',monospace}
+.review-notes{margin:18px 20px;padding:16px 18px;border:1px solid #3a3945;border-left:3px solid #b9b0df;border-radius:4px;background:#20212a}
+.review-notes h3,.analysis-card h3{margin:0 0 11px;font-size:11px;font-weight:500;color:#e9e7e1}
+.review-notes p{margin:7px 0;color:#b7bbc4;font-size:10px;line-height:1.7}
+.review-notes small{display:block;margin-top:12px;color:#858b98;font-size:9px;line-height:1.6}
+.analysis-grid{padding:0 20px 20px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.analysis-card{min-width:0;border:1px solid #303642;border-radius:5px;background:#191b21;padding:15px}
+.analysis-table-wrap{overflow:auto;max-height:340px}
+.analysis-table-wrap table{width:100%;border-collapse:collapse;font-size:9px;text-align:left}
+.analysis-table-wrap th{position:sticky;top:0;background:#191b21;color:#858b98;font-weight:400;letter-spacing:.04em;white-space:nowrap}
+.analysis-table-wrap td,.analysis-table-wrap th{padding:8px 9px;border-bottom:1px solid #303642}
+.analysis-table-wrap td{color:#c8cbd2;white-space:nowrap}
+.analysis-table-wrap details{position:relative}.analysis-table-wrap summary{cursor:pointer;color:#b9b0df}.analysis-table-wrap pre{position:absolute;z-index:2;right:0;top:12px;width:min(460px,75vw);max-height:260px;overflow:auto;padding:12px;border:1px solid #414754;border-radius:4px;background:#111318;color:#c8cbd2;font-size:8px;white-space:pre-wrap}
+.analysis-empty{margin:0;color:#858b98;font-size:9px}
+.player-review{padding:0 20px 18px}.player-review>h3{margin:0 0 10px;font-size:11px;font-weight:500}.player-review-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}.player-review-card{min-width:0;padding:12px;border:1px solid #303642;border-radius:4px;background:#191b21}.player-review-card>div{display:flex;justify-content:space-between;gap:8px;margin-bottom:9px}.player-review-card strong{font-size:10px;font-weight:500}.player-review-card span{font-size:8px;color:#b9b0df}.player-review-card p{margin:6px 0 0;color:#969ca8;font-size:9px;line-height:1.6}
+@media(max-width:720px){.analysis-grid{grid-template-columns:1fr;padding:0 12px 12px}.analysis-controls{align-items:flex-start;flex-direction:column;padding:14px}.analysis-controls select{width:100%;min-width:0}.review-notes{margin:12px}.player-review{padding:0 12px 12px}.player-review-grid{grid-template-columns:1fr}}

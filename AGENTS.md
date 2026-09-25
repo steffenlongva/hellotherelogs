@@ -1,5 +1,12 @@
 # Repository Guidelines
 
+## Continuity and publishing
+
+- Read `PROJECT_STATUS.md` before making changes. It is the durable handoff for the current product state, design decisions, known limitations, and next work.
+- Update `PROJECT_STATUS.md` whenever implementation status or priorities change enough to affect the next contributor's work.
+- The user wants completed repository work pushed to GitHub by default. After finishing a coherent change, commit it and push the branch to `origin`; do not leave completed work only in the local workspace. Never commit `.env`, credentials, tokens, local databases, or generated build output.
+- Keep `README.md` focused on setup and user-facing behavior. Put contributor handoff and roadmap details in `PROJECT_STATUS.md`.
+
 ## Project Structure & Module Organization
 
 hellotherelogs is a self-hosted Warcraft Logs Fresh analysis application. Keep the Python API in `backend/` and the React/TypeScript client in `frontend/`. Backend routes live in `backend/app/api/`; configuration, database/cache, WCL transport, report parsing, and normalization stay in focused modules under `backend/app/`. Put pytest tests under `backend/tests/` and Vite source/assets under `frontend/src/`. Keep Compose and deployment configuration at the repository root or under a clearly named deployment directory. Do not commit generated build output, local databases, or credentials.

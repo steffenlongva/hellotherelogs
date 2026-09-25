@@ -19,7 +19,7 @@ services:
     build: ./frontend
     container_name: hellotherelogs-frontend
     ports:
-      - "${HELLOTHERELOGS_PORT:-8080}:80"
+      - "${HELLOTHERELOGS_BIND_ADDRESS:-0.0.0.0}:${HELLOTHERELOGS_PORT:-8080}:80"
     depends_on:
       - backend
     restart: unless-stopped
