@@ -1,27 +1,28 @@
 services:
   backend:
     build: ./backend
-    container_name: logloom-backend
+    container_name: hellotherelogs-backend
     environment:
-      DATABASE_URL: sqlite:////data/logloom.sqlite3
+      DATABASE_URL: sqlite:////data/hellotherelogs.sqlite3
+      CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-900}
       WCL_CLIENT_ID: ${WCL_CLIENT_ID:-}
       WCL_CLIENT_SECRET: ${WCL_CLIENT_SECRET:-}
       WCL_TOKEN_URL: ${WCL_TOKEN_URL:-https://www.warcraftlogs.com/oauth/token}
       WCL_GRAPHQL_URL: ${WCL_GRAPHQL_URL:-https://fresh.warcraftlogs.com/api/v2/client}
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:8080}
     volumes:
-      - logloom_data:/data
+      - hellotherelogs_data:/data
     expose:
       - "8000"
     restart: unless-stopped
   frontend:
     build: ./frontend
-    container_name: logloom-frontend
+    container_name: hellotherelogs-frontend
     ports:
-      - "${LOGLOOM_PORT:-8080}:80"
+      - "${HELLOTHERELOGS_PORT:-8080}:80"
     depends_on:
       - backend
     restart: unless-stopped
 
 volumes:
-  logloom_data:
+  hellotherelogs_data:

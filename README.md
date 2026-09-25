@@ -1,42 +1,43 @@
-# HelloThereLogs
+# hellotherelogs
 
-HelloThereLogs  is a self-hosted Warcraft Logs Classic Fresh analysis application. This is Phase 1: the API/frontend foundation, server-side WCL authentication transport, deployment, and health check. The report dashboard is intentionally not implemented yet.
+hellotherelogs is a self-hosted Warcraft Logs Classic Fresh report reader. It loads public report data through the Fresh Warcraft Logs GraphQL API; Warcraft Logs credentials remain in FastAPI and are never sent to the browser.
 
-## Start on Unraid or Docker
+## Start with Docker Compose
 
-1. Create a Warcraft Logs API client in the Warcraft Logs account client management page.
-2. Copy `.env.example` to `.env`; fill in `WCL_CLIENT_ID` and `WCL_CLIENT_SECRET`. Keep `.env` private.
+1. Create a Warcraft Logs **V2 API client** in the Warcraft Logs account client management page.
+2. Copy `.env.example` to `.env`, then set `WCL_CLIENT_ID` and `WCL_CLIENT_SECRET`.
 3. Run `docker compose up --build -d` from this directory.
-4. Open `http://YOUR_UNRAID_HOST:8080`. Set `LOGLOOM_PORT` in `.env` to change the host port.
-5. Check `http://YOUR_UNRAID_HOST:8080/api/health` for `{"status":"ok","service":"logloom-api"}`.
-
-Docker Compose creates the persistent `logloom_data` volume for SQLite. The frontend's nginx proxies `/api/` to FastAPI. Warcraft Logs credentials are only passed to the backend container and are never compiled into browser assets. OAuth is requested lazily when a backend WCL operation is invoked; health checks do not require configured credentials.
+4. Open `http://YOUR_UNRAID_HOST:8080`; set `HELLOTHERELOGS_PORT` to change the host port.
+5. Visit `/api/health` to check the API. Compose persists SQLite data in the `hellotherelogs_data` volume.
 
 ## Local development
 
 Backend: `cd backend && pip install -r requirements.txt && uvicorn app.main:app --reload --port 8000`.
 
-Frontend: `cd frontend && npm install && npm run dev`. Vite serves the frontend; in the deployed configuration nginx routes API requests to FastAPI. For local frontend development, use a Vite proxy or browse via the Compose frontend.
+Frontend: `cd frontend && npm install && npm run dev`. Vite proxies `/api` to `http://localhost:8000`.
 
-Run backend checks with `cd backend && pytest`. Build the frontend with `cd frontend && npm run build`.
+Run `cd backend && pytest` for backend tests and `cd frontend && npm run build` for a production frontend build.
 
-## Warcraft Logs API verification
+## Warcraft Logs API versions and schema
 
-The Fresh schema documentation is published at [Fresh v2 API docs](https://fresh.warcraftlogs.com/v2-api-docs/warcraft/). OAuth flow details are documented at [Warcraft Logs API docs](https://www.warcraftlogs.com/api/docs). The documented public API uses GraphQL and the client-credentials flow: POST `grant_type=client_credentials` to `https://www.warcraftlogs.com/oauth/token` using HTTP Basic credentials (`client_id:client_secret`), then pass the returned token as `Authorization: Bearer …`. The app defaults GraphQL to `https://fresh.warcraftlogs.com/api/v2/client`; both URLs can be changed via backend environment settings.
+Warcraft Logs supports two API versions. **V1 is a REST API using a V1 key**, which provides access to non-private site data and has separate V1 documentation/playground. **V2 is GraphQL and uses OAuth client credentials**. hellotherelogs uses V2; a V1 key cannot be used as the V2 client ID or secret. The V2 client-credentials exchange posts `grant_type=client_credentials` with HTTP Basic credentials to `https://www.warcraftlogs.com/oauth/token`; requests then send the returned Bearer token to GraphQL. Defaults are `https://fresh.warcraftlogs.com/api/v2/client` for Fresh GraphQL and the Warcraft Logs OAuth token URL. Both are backend settings. See the [Warcraft Logs API documentation](https://www.warcraftlogs.com/api/docs) and [Fresh V2 schema](https://fresh.warcraftlogs.com/v2-api-docs/warcraft/).
 
-Fresh's documented `ReportData.report(code: String, allowUnlisted: Boolean)` returns `Report`. `Report` documents `code`, `title`, `startTime`, `endTime`, `fights(...)`, `masterData(translate)`, `events(...)`, and `table(...)`. `ReportFight` includes `id`, `encounterID`, `name`, `startTime`, `endTime`, `kill`, `fightPercentage`, and participant ID/spec arrays. Fight times are relative milliseconds from report start; report start/end are UNIX milliseconds. Events accept documented filters including `dataType`, `fightIDs`, `startTime`, `endTime`, `sourceID`, `targetID`, `abilityID`, `filterExpression`, and `limit` (documented 100–10000; default 300). `table` returns JSON and supports `dataType`, fight/time/source/target filters, `viewBy`, and related filters. Values/enums must follow the live schema; dashboard queries will be implemented against that schema in a later phase.
+The report query follows documented `Query.reportData.report(code:)` fields: `code`, `title`, `startTime`, `endTime`, `zone { name }`, `guild { name }`, and `fights`. The Fresh `ReportFight` schema documents `id`, `encounterID`, `name`, `startTime`, `endTime`, `kill`, `fightPercentage`, and `friendlyPlayers`. Report start/end values are UNIX milliseconds; fight times are millisecond offsets from report start. Normalization derives report duration from report start/end and fight duration from fight end/start. Boss progression groups fights by nonzero `encounterID`, counting `kill: true` as kills and `kill: false` as wipes; it preserves null kill values without treating them as wipes.
 
-The documented GraphQL shape for a report lookup is `query ReportOverview($code: String!) { reportData { report(code: $code) { code title startTime endTime fights { id encounterID name startTime endTime kill fightPercentage } } } }`; the `reportData`, `report`, and fight field names come from the Fresh schema. Table/event calls are nested under `report` and take schema-defined arguments; event types use the `EventDataType` enum, whose live values should be read from the current schema before use. `filterExpression` accepts Warcraft Logs' site query language; its grammar is not fully specified by the field description in the Fresh schema, so Logloom will not invent or rewrite expressions. A query can ask for the live point state as `query { rateLimitData { limitPerHour pointsSpentThisHour pointsResetIn } }`.
+Event/table exploration is not part of this phase. The schema describes `events` and `table` as report fields with typed filters, and `filterExpression` as Warcraft Logs site query language. The exact enum values/expressions must be taken from the live Fresh schema/site query language rather than guessed. API usage is observable via `rateLimitData { limitPerHour pointsSpentThisHour pointsResetIn }`; the app does not assume one fixed quota.
 
-The schema exposes `rateLimitData { limitPerHour pointsSpentThisHour pointsResetIn }`, allowing an installation to observe its own point quota rather than assume a fixed allowance. API points are distinct from raw request counts. Limits may depend on the API client/account; handle API errors and respect the returned budget.
+## Report workflow
+
+Paste a Fresh URL such as `https://fresh.warcraftlogs.com/reports/REPORTCODE`, choose **ANALYZE LOG**, then the app navigates to `/reports/REPORTCODE`. The backend validates the Fresh report URL, retrieves and normalizes report/fight data, and caches the JSON representations in SQLite for `CACHE_TTL_SECONDS` (default 900 seconds).
 
 ## Configuration
 
 | Variable | Purpose |
 | --- | --- |
-| `WCL_CLIENT_ID`, `WCL_CLIENT_SECRET` | Server-side WCL OAuth client credentials |
+| `WCL_CLIENT_ID`, `WCL_CLIENT_SECRET` | Backend-only V2 OAuth client credentials |
 | `WCL_TOKEN_URL` | OAuth token endpoint |
-| `WCL_GRAPHQL_URL` | Fresh GraphQL client endpoint |
-| `DATABASE_URL` | SQLite URL; Compose sets this to its persistent volume |
-| `FRONTEND_ORIGIN` | Allowed browser origin for direct API development |
-| `LOGLOOM_PORT` | Optional host port for nginx, default `8080` |
+| `WCL_GRAPHQL_URL` | Fresh V2 GraphQL endpoint |
+| `DATABASE_URL` | SQLite URL; Compose uses the persistent volume |
+| `CACHE_TTL_SECONDS` | Normalized report/fight cache lifetime |
+| `FRONTEND_ORIGIN` | CORS origin for direct API access |
+| `HELLOTHERELOGS_PORT` | Optional nginx host port (default `8080`) |
