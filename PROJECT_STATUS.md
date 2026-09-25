@@ -13,7 +13,8 @@ hellotherelogs is a self-hosted Warcraft Logs Fresh raid analysis app, currently
 - Warcraft Logs V2 OAuth client credentials are loaded only in the backend. The user confirmed that valid V2 credentials fixed token acquisition and public Fresh reports now load. Do not ask the user to paste credentials and never inspect or commit `.env` contents.
 - The report page shows report metadata, boss progression, attempts, and trash fights.
 - A selected-pull review endpoint uses the selected fight's `friendlyPlayers` roster, WCL tables for damage, healing, damage taken, friendly fire, casts, interrupts, and buffs, plus death/interrupt/combatant events and player details where available. Results are cached using the existing SQLite cache and TTL.
-- The analysis dashboard includes per-player totals, top-five damage/healing/damage-taken/friendly-fire cards, death and interrupt event timelines, and available gear/auras/consumable-like casts. Missing event/detail payloads are labeled as unavailable. Consumables are identified heuristically by cast name; gear enrichment depends on WCL player detail payloads.
+- The analysis dashboard groups player comparisons by class, makes full leaderboards expandable, shows player and ability uptime, and gives per-player review prompts tied to recorded deaths, friendly fire, and uptime observations. It computes friendly fire from outgoing damage events where both source and target belong to the selected fight roster; NPC-target damage is excluded. Friendly fire is marked incomplete if event data is unavailable or still paginated after the bounded page fetch.
+- Itemization summaries show average item level and separate enchant/gem counts and details, alongside auras and consumable-like casts. Missing event/detail payloads are labeled as unavailable. Consumables are identified heuristically by cast name; gear enrichment depends on WCL player detail payloads.
 - The top bar includes a persistent light/dark selector and a persistent text-size control. Font sizes use `rem` so the control scales the interface consistently.
 - Suggestions and summaries are evidence-led review prompts, not grades or class/spec rotation prescriptions.
 - Backend diagnostics log report failures and WCL OAuth/GraphQL failures. Keep secrets and bearer tokens out of logs.
@@ -22,7 +23,7 @@ hellotherelogs is a self-hosted Warcraft Logs Fresh raid analysis app, currently
 
 - Compose route: `GET /api/reports/{report_code}/fights/{fight_id}/analysis`.
 - Analysis query and caching live in `backend/app/services/report_service.py`; API routing and error mapping live in `backend/app/api/reports.py`.
-- Current analysis fields use WCL `TableDataType` values `DamageDone`, `Healing`, `DamageTaken`, `Casts`, `Interrupts`, and `Buffs`, scoped to a fight ID. Death, interrupt, and combatant data are also requested as event streams. Master data actors are filtered against the selected fight roster before returning them to the frontend.
+- Current analysis fields use WCL `TableDataType` values `DamageDone`, `Healing`, `DamageTaken`, `Casts`, `Interrupts`, and `Buffs`, scoped to a fight ID. Death, interrupt, combatant, and per-player outgoing damage data are requested as event streams. Master data actors are filtered against the selected fight roster before returning them to the frontend.
 - The UI is in `frontend/src/App.tsx`, with analysis-specific styles in `frontend/src/analysis.css`.
 - WCL `table` responses are JSON-shaped and may contain nested data. Inspect real response shapes before writing analysis rules; do not assume the first scalar value or table row means the same thing across table types.
 - Public client-credentials access cannot read private reports. The application currently expects accessible public Fresh reports.
@@ -32,12 +33,12 @@ hellotherelogs is a self-hosted Warcraft Logs Fresh raid analysis app, currently
 
 The current review is a first functional data layer, not the finished guild coach. In particular:
 
-1. Inspect representative Fresh table and event payloads to validate all player metric extraction, show per-ability uptime clearly, and improve event paging/truncation handling.
+1. Inspect representative Fresh table and event payloads to validate all player metric extraction and uptime presentation; improve pagination handling for death and interrupt events.
 2. Add event-level death recaps (damage sources and timeline before death) and missed dangerous casts, rather than treating successful interrupts as the whole kick story.
 3. Build per-player evidence summaries across pulls and progression attempts; distinguish role, class, assignment, fight length, and kill/wipe context.
 4. Add class/spec/game-version-aware suggestions backed by explicit evidence or maintained rules. Keep recommendations explainable and label uncertainty; avoid unsupported benchmark claims.
-5. Validate gear, gems, enchants, and consumables against real response samples; current enrichment shows fields present in player details and detects likely consumable casts by name.
-6. Handle WCL pagination for event data, archive/access failures, and API rate limits deliberately. Cache expensive report analysis using the existing cache.
+5. Validate gear, gems, enchants, and consumables against real response samples; current enrichment shows reported item level/enchant/gem fields and detects likely consumable casts by name.
+6. Finish paging death and interrupt event streams, and handle archive/access failures and API rate limits deliberately. Friendly damage follows event pagination with a bounded six-page cap. Cache expensive report analysis using the existing cache.
 7. Add mocked backend coverage for analysis response shapes, invalid fight IDs, caching, and WCL failures. Build the frontend in an environment with npm dependencies installed.
 
 ## Development and validation
@@ -46,7 +47,7 @@ The current review is a first functional data layer, not the finished guild coac
 - Backend tests: `cd backend && pytest`.
 - Frontend build: `cd frontend && npm run build`.
 - Current contributor shell may not have `npm` installed, and Docker socket access can be unavailable; report those limitations rather than assuming a build or live WCL query succeeded.
-- For the current `feat/raid-analytics-dashboard` work, host `npm` and the repo `.venv` are absent. `docker compose build` succeeded, including the frontend `tsc -b` and Vite production build; Python tests could not run because `pytest` is not installed in the host environment. No live Compose/WCL validation has been run. `git diff --check` passes.
+- For `feat/clean-player-comparison`, `.venv/bin/python -m pytest` passed all 17 backend tests and `docker compose build` passed, including the frontend `tsc -b` and Vite production build. No live Compose/WCL report validation has been run. `git diff --check` passes.
 - Keep API calls server-side and use mocked Warcraft Logs responses in tests. Never make tests depend on private reports or real credentials.
 
 ## WSL access notes

@@ -33,7 +33,8 @@ type Report = {
 }
 type Actor = { id: number; name: string; type: string; subType: string | null }
 type FightAnalysis = { fight: Fight; tables: Record<string, unknown>; events: Record<string, unknown>; player_details: unknown; actors: Actor[] }
-type PlayerStats = Actor & { damage: number | null; dps: number | null; healing: number | null; hps: number | null; damageTaken: number | null; friendlyDamage: number | null; deaths: Array<Record<string, unknown>>; interrupts: Array<Record<string, unknown>>; consumables: string[]; gear: Array<Record<string, unknown>>; auras: string[] }
+type AbilityUptime = { name: string; percent: number | null }
+type PlayerStats = Actor & { damage: number | null; dps: number | null; healing: number | null; hps: number | null; damageTaken: number | null; friendlyDamage: number | null; friendlyDamageReliable: boolean; friendlyDamageAbilities: Array<{ name: string; amount: number; hits: number }>; deaths: Array<Record<string, unknown>>; interrupts: Array<Record<string, unknown>>; interruptsAvailable: boolean; consumables: string[]; gear: Array<Record<string, unknown>>; averageItemLevel: number | null; enchantCount: number | null; gemCount: number | null; auras: string[]; uptimes: AbilityUptime[]; uptimeAverage: number | null }
 
 async function getHealth(): Promise<Health> {
   const response = await fetch('/api/health')
@@ -159,23 +160,38 @@ function makePlayerStats(analysis: FightAnalysis): PlayerStats[] {
   const interrupts = tableRows(analysis.events.interrupts)
   const combatantEvents = tableRows(analysis.events.combatant_info)
   const durationSeconds = analysis.fight.duration_ms / 1000
+  const friendlyDamageReliable = analysis.tables.friendly_damage_complete === true
   return analysis.actors
     .filter((actor) => actor.type === 'Player' && participants.has(actor.id))
     .map((actor) => {
       const damageRow = rowForActor(analysis.tables.damage, actor, 'source')
       const healingRow = rowForActor(analysis.tables.healing, actor, 'source')
       const takenRow = rowForActor(analysis.tables.damage_taken, actor, 'target')
-      const friendlyRow = rowForActor(analysis.tables.friendly_damage, actor, 'source')
+      const friendlyTotals = isRecord(analysis.tables.friendly_damage) ? analysis.tables.friendly_damage : {}
       const castsRow = rowForActor(analysis.tables.casts, actor, 'source')
+      const buffRow = rowForActor(analysis.tables.buff_uptimes, actor, 'target')
       const actorDeathEvents = deaths.filter((event) => actorId(event, 'target') === actor.id)
       const actorInterrupts = interrupts.filter((event) => actorId(event, 'source') === actor.id)
       const actorCombatant = combatantEvents.find((event) => actorId(event, 'source') === actor.id || actorId(event, 'target') === actor.id)
       const details = allRecords(analysis.player_details).find((record) => Number(record.id ?? record.actorID ?? record.actorId) === actor.id && (Array.isArray(record.gear) || isRecord(record.combatantInfo) || isRecord(record.combatantinfo)))
       const combatantInfo = isRecord(details?.combatantInfo) ? details.combatantInfo : isRecord(details?.combatantinfo) ? details.combatantinfo : actorCombatant
+      const friendlyDamageValue = friendlyTotals[String(actor.id)]
       const gear = Array.isArray(details?.gear) ? details.gear.filter(isRecord) : Array.isArray(combatantInfo?.gear) ? combatantInfo.gear.filter(isRecord) : []
+      const itemLevels = gear.map((item) => numericValue(item, ['itemLevel', 'itemlevel', 'ilevel', 'ilvl'])).filter((level): level is number => level !== null && level > 0)
+      const enchantKeys = ['permanentEnchantName', 'permanentEnchant', 'enchantName', 'enchant']
+      const enchantFieldsPresent = gear.some((item) => enchantKeys.some((key) => key in item))
+      const gemFieldsPresent = gear.some((item) => 'gems' in item)
+      const enchantCount = enchantFieldsPresent ? gear.filter((item) => Boolean(item.permanentEnchantName ?? item.permanentEnchant ?? item.enchantName ?? item.enchant)).length : null
+      const gemCount = gemFieldsPresent ? gear.reduce((count, item) => count + (Array.isArray(item.gems) ? item.gems.filter((gem) => gem !== null && gem !== 0 && gem !== '').length : 0), 0) : null
       const auras = Array.isArray(combatantInfo?.auras) ? combatantInfo.auras.map((aura) => isRecord(aura) ? String((isRecord(aura.ability) ? aura.ability.name : undefined) ?? aura.name ?? '') : '').filter(Boolean) : []
       const consumablePattern = /potion|flask|elixir|food|feast|rune|healthstone|mana stone|wizard oil|sharpening|consecrated|free action|protection potion/i
       const consumables = [...new Set(allRecords(castsRow).map((record) => record.name).filter((name): name is string => typeof name === 'string' && consumablePattern.test(name)))]
+      const uptimes = allRecords(buffRow).filter((record) => record !== buffRow && typeof record.name === 'string').map((record) => {
+        const rawPercent = record.uptimePercent ?? record.uptime ?? record.percent ?? record.percentage
+        let percent = typeof rawPercent === 'string' && rawPercent.endsWith('%') ? Number.parseFloat(rawPercent) : numericValue(record, ['uptimePercent', 'uptime', 'percent', 'percentage', 'totalTime', 'activeTime'])
+        if (percent !== null && percent > 100 && durationSeconds > 0) percent = 100 * percent / analysis.fight.duration_ms
+        return { name: String(record.name), percent: percent === null ? null : Math.max(0, Math.min(100, percent)) }
+      }).filter((ability, index, rows) => rows.findIndex((item) => item.name === ability.name) === index)
       return {
         ...actor,
         damage: numericValue(damageRow, ['total', 'amount', 'damage']),
@@ -183,12 +199,20 @@ function makePlayerStats(analysis: FightAnalysis): PlayerStats[] {
         healing: numericValue(healingRow, ['total', 'amount', 'healing']),
         hps: numericValue(healingRow, ['hps']) ?? (numericValue(healingRow, ['total', 'amount', 'healing']) !== null && durationSeconds > 0 ? (numericValue(healingRow, ['total', 'amount', 'healing']) as number) / durationSeconds : null),
         damageTaken: numericValue(takenRow, ['total', 'amount', 'damageTaken', 'damage']),
-        friendlyDamage: numericValue(friendlyRow, ['total', 'amount', 'damage']),
+        friendlyDamage: typeof friendlyDamageValue === 'number' && Number.isFinite(friendlyDamageValue) ? friendlyDamageValue : null,
+        friendlyDamageReliable,
+        friendlyDamageAbilities: typeof analysis.tables.friendly_damage_abilities === 'object' && analysis.tables.friendly_damage_abilities !== null && Array.isArray((analysis.tables.friendly_damage_abilities as Record<string, unknown>)[String(actor.id)]) ? ((analysis.tables.friendly_damage_abilities as Record<string, unknown>)[String(actor.id)] as Array<{ name: string; amount: number; hits: number }>) : [],
         deaths: actorDeathEvents,
         interrupts: actorInterrupts,
+        interruptsAvailable: eventDataAvailable(analysis.events.interrupts),
         consumables,
         gear,
+        averageItemLevel: itemLevels.length ? itemLevels.reduce((sum, level) => sum + level, 0) / itemLevels.length : null,
+        enchantCount,
+        gemCount,
         auras,
+        uptimes,
+        uptimeAverage: uptimes.length && uptimes.every((ability) => ability.percent !== null) ? uptimes.reduce((sum, ability) => sum + (ability.percent ?? 0), 0) / uptimes.length : null,
       }
     })
 }
@@ -291,7 +315,7 @@ function ReportPage({ code }: { code: string }) {
   const playerStats = useMemo(() => analysis.data ? makePlayerStats(analysis.data) : [], [analysis.data])
   const deathEvents = analysis.data ? tableRows(analysis.data.events.deaths) : []
   const interruptEvents = analysis.data ? tableRows(analysis.data.events.interrupts) : []
-  const metricLeaders = (key: 'damage' | 'healing' | 'damageTaken' | 'friendlyDamage') => [...playerStats].filter((player) => player[key] !== null).sort((a, b) => (b[key] ?? 0) - (a[key] ?? 0)).slice(0, 5)
+  const metricLeaders = (key: 'damage' | 'healing' | 'damageTaken' | 'friendlyDamage') => [...playerStats].filter((player) => player[key] !== null && (key !== 'friendlyDamage' || player.friendlyDamageReliable)).sort((a, b) => (b[key] ?? 0) - (a[key] ?? 0)).slice(0, playerStats.length)
 
   return <main className="shell report-shell">
     <Header connected />
@@ -333,23 +357,21 @@ function ReportPage({ code }: { code: string }) {
         {analysis.isLoading && <div className="minor-loading"><LoaderCircle className="spin" size={14} /> LOADING DAMAGE, HEALING, SURVIVABILITY, INTERRUPTS & UPTIME</div>}
         {analysis.isError && <div className="inline-error">Encounter analysis unavailable: {analysis.error.message}</div>}
         {analysis.data && <>
-          <div className="review-notes"><h3>Pull review</h3><p>Showing {playerStats.length} friendly players recorded in this pull. Compare output alongside assignments, role and encounter mechanics.</p><small>Suggestions use observable log evidence. Missing data is shown as unavailable; a zero is only shown when the event data is present.</small></div>
+          <div className="review-notes"><h3>Pull review</h3><p>Showing {playerStats.length} friendly players recorded in this pull. Compare output alongside assignments, role and encounter mechanics. Friendly damage means outgoing damage from one raid player to another; NPC damage is excluded.</p><small>Suggestions use observable log evidence. Missing data is shown as unavailable; a zero is only shown when the event data is present.</small></div>
           <div className="leader-grid">
-            <LeaderCard title="Top damage" players={metricLeaders('damage')} metric="damage" tint="blue" />
-            <LeaderCard title="Top healing" players={metricLeaders('healing')} metric="healing" tint="mint" />
-            <LeaderCard title="Most damage taken" players={metricLeaders('damageTaken')} metric="damageTaken" tint="pink" />
-            <LeaderCard title="Friendly fire" players={metricLeaders('friendlyDamage')} metric="friendlyDamage" tint="lavender" />
+            <LeaderCard title="Damage" players={metricLeaders('damage')} metric="damage" tint="blue" />
+            <LeaderCard title="Healing" players={metricLeaders('healing')} metric="healing" tint="mint" />
+            <LeaderCard title="Damage taken" players={metricLeaders('damageTaken')} metric="damageTaken" tint="pink" />
+            <LeaderCard title="Friendly fire dealt" players={metricLeaders('friendlyDamage')} metric="friendlyDamage" tint="lavender" />
           </div>
-          <article className="analysis-card roster-card"><div className="card-heading"><div><h3>Player performance</h3><p>Per pull totals and event counts</p></div><span>{playerStats.length} PLAYERS</span></div>
-            {playerStats.length === 0 ? <p className="analysis-empty">No friendly player roster was returned for this pull.</p> : <div className="analysis-table-wrap"><table><thead><tr><th>Player</th><th>Damage</th><th>DPS</th><th>Healing</th><th>HPS</th><th>Damage taken</th><th>Friendly damage</th><th>Deaths</th><th>Interrupts</th></tr></thead><tbody>{playerStats.map((player) => <tr key={player.id}><td><strong>{player.name}</strong><small>{player.subType ?? 'Player'}</small></td><td>{formatMetric(player.damage)}</td><td>{formatMetric(player.dps)}</td><td>{formatMetric(player.healing)}</td><td>{formatMetric(player.hps)}</td><td>{formatMetric(player.damageTaken)}</td><td>{formatMetric(player.friendlyDamage)}</td><td>{eventDataAvailable(analysis.data?.events.deaths) ? player.deaths.length : '—'}</td><td>{eventDataAvailable(analysis.data?.events.interrupts) ? player.interrupts.length : '—'}</td></tr>)}</tbody></table></div>}
-          </article>
+          <ClassRoster players={playerStats} deathsAvailable={eventDataAvailable(analysis.data.events.deaths)} interruptsAvailable={eventDataAvailable(analysis.data.events.interrupts)} friendlyDamageComplete={analysis.data.tables.friendly_damage_complete === true} />
           <div className="detail-grid">
             <EventCard title="Deaths" rows={deathEvents} unavailable={!eventDataAvailable(analysis.data.events.deaths)} kind="death" fight={analysis.data.fight} />
             <EventCard title="Interrupts" rows={interruptEvents} unavailable={!eventDataAvailable(analysis.data.events.interrupts)} kind="interrupt" fight={analysis.data.fight} />
           </div>
-          <article className="analysis-card roster-card"><div className="card-heading"><div><h3>Gear, auras & consumables</h3><p>Only fields present in the Warcraft Logs response are shown</p></div></div><div className="equipment-grid">{playerStats.map((player) => <section className="equipment-player" key={player.id}><h4>{player.name} <span>{player.subType ?? ''}</span></h4>{player.gear.length ? <ul>{player.gear.map((item, index) => <li key={index}><strong>{String(item.name ?? item.itemName ?? `Item ${item.id ?? ''}`)}</strong><span>{item.itemLevel ? `ilvl ${displayValue(item.itemLevel)}` : ''}{item.permanentEnchantName ? ` · ${String(item.permanentEnchantName)}` : ''}{item.temporaryEnchantName ? ` · ${String(item.temporaryEnchantName)}` : ''}{Array.isArray(item.gems) ? ` · ${item.gems.map((gem) => isRecord(gem) ? String(gem.name ?? gem.itemLevel ?? 'gem') : String(gem)).join(', ')}` : ''}</span></li>)}</ul> : <p className="analysis-empty">Gear detail unavailable</p>}{player.auras.length > 0 && <p className="equipment-meta"><b>Auras at pull</b> · {player.auras.join(', ')}</p>}<p className="equipment-meta"><b>Consumable casts</b> · {player.consumables.length ? player.consumables.join(', ') : 'No matching casts returned'}</p></section>)}</div></article>
           <div className="analysis-grid">
-            <AnalysisTable title="Ability uptime" value={analysis.data.tables.buff_uptimes} />
+            <AnalysisTable title="Player buff uptime" value={analysis.data.tables.buff_uptimes} />
+            <AnalysisTable title="Ability uptime across the raid" value={analysis.data.tables.ability_uptimes} />
             <AnalysisTable title="Cast activity" value={analysis.data.tables.casts} />
           </div>
         </>}
@@ -369,7 +391,50 @@ function formatMetric(value: number | null): string { return value === null ? '�
 
 function LeaderCard({ title, players, metric, tint }: { title: string; players: PlayerStats[]; metric: 'damage' | 'healing' | 'damageTaken' | 'friendlyDamage'; tint: string }) {
   const max = Math.max(1, ...players.map((player) => player[metric] ?? 0))
-  return <article className="leader-card"><h3><span className={`leader-dot tint-${tint}`} />{title}</h3>{players.length === 0 ? <p className="analysis-empty">Metric unavailable</p> : players.map((player, index) => <div className="leader-row" key={player.id}><span className="leader-rank">{index + 1}</span><span className="leader-name">{player.name}<i><b style={{ width: `${Math.max(3, 100 * (player[metric] ?? 0) / max)}%` }} /></i></span><strong>{formatMetric(player[metric])}</strong></div>)}</article>
+  const row = (player: PlayerStats, index: number) => <div className="leader-row" key={player.id}><span className="leader-rank">{index + 1}</span><span className="leader-name">{player.name}<i><b style={{ width: `${Math.max(3, 100 * (player[metric] ?? 0) / max)}%` }} /></i></span><strong>{formatMetric(player[metric])}</strong></div>
+  return <article className="leader-card"><h3><span className={`leader-dot tint-${tint}`} />{title}</h3>{players.length === 0 ? <p className="analysis-empty">Metric unavailable</p> : <>{players.slice(0, 5).map(row)}{players.length > 5 && <details className="leader-more"><summary>Show all {players.length} players</summary>{players.slice(5).map((player, index) => row(player, index + 5))}</details>}</>}</article>
+}
+
+function playerSuggestions(player: PlayerStats): string[] {
+  const notes: string[] = []
+  if (player.deaths.length) notes.push(`${player.deaths.length} death${player.deaths.length === 1 ? '' : 's'} recorded. Review the final damage events and defensive timing around each death.`)
+  if (player.friendlyDamageReliable && (player.friendlyDamage ?? 0) > 0) {
+    const ability = [...player.friendlyDamageAbilities].sort((a, b) => b.amount - a.amount)[0]
+    notes.push(`Dealt ${formatMetric(player.friendlyDamage)} friendly damage${ability ? `, mostly from ${ability.name}` : ''}. Review target selection and avoidable cleave.`)
+  }
+  const lowestUptime = [...player.uptimes].filter((ability) => ability.percent !== null).sort((a, b) => (a.percent ?? 0) - (b.percent ?? 0))[0]
+  if (lowestUptime?.percent !== null && lowestUptime) notes.push(`${lowestUptime.name} uptime was ${lowestUptime.percent.toFixed(1)}% in this pull. Check whether the buff was expected for this role and assignment.`)
+  if (player.interruptsAvailable && player.interrupts.length === 0) notes.push('No interrupts were recorded. Check assigned kick duties and whether an interruptible cast occurred before drawing a conclusion.')
+  if (!notes.length) notes.push('No clear issue was detected in the available fields. Compare this pull with the same player’s other attempts and their assigned role.')
+  return notes
+}
+
+function PlayerDetail({ player }: { player: PlayerStats }) {
+  const enchantItems = player.gear.filter((item) => item.permanentEnchantName ?? item.permanentEnchant ?? item.enchantName ?? item.enchant)
+  const gemItems = player.gear.flatMap((item) => Array.isArray(item.gems) ? item.gems.filter((gem) => gem !== null && gem !== 0 && gem !== '').map((gem) => ({ item, gem })) : [])
+  return <details className="player-detail"><summary>Review player</summary><div className="player-detail-content">
+    <section><h4>Evidence to review</h4><ul className="suggestion-list">{playerSuggestions(player).map((note) => <li key={note}>{note}</li>)}</ul></section>
+    <section><h4>Uptime by ability</h4>{player.uptimes.length ? <ul>{player.uptimes.map((ability) => <li key={ability.name}><span>{ability.name}</span><strong>{ability.percent === null ? '—' : `${ability.percent.toFixed(1)}%`}</strong></li>)}</ul> : <p className="analysis-empty">Player uptime detail not returned for this pull.</p>}</section>
+    <section><h4>Itemization</h4><div className="gear-summary"><span>Average item level <b>{player.averageItemLevel === null ? '—' : player.averageItemLevel.toFixed(1)}</b></span><span>Enchants found <b>{player.enchantCount === null ? '—' : player.enchantCount}</b></span><span>Gems found <b>{player.gemCount === null ? '—' : player.gemCount}</b></span></div>
+      <details><summary>Enchant details ({enchantItems.length})</summary><ul>{enchantItems.map((item, index) => <li key={index}><span>{String(item.name ?? item.itemName ?? 'Equipped item')}</span><strong>{String(item.permanentEnchantName ?? item.permanentEnchant ?? item.enchantName ?? item.enchant)}</strong></li>)}</ul></details>
+      <details><summary>Gem details ({gemItems.length})</summary><ul>{gemItems.map(({ item, gem }, index) => <li key={index}><span>{String(item.name ?? item.itemName ?? 'Equipped item')}</span><strong>{isRecord(gem) ? String(gem.name ?? gem.id ?? 'Gem') : String(gem)}</strong></li>)}</ul></details>
+      {player.gear.length > 0 && <details><summary>Equipped items ({player.gear.length})</summary><ul>{player.gear.map((item, index) => <li key={index}><span>{String(item.name ?? item.itemName ?? `Item ${item.id ?? ''}`)}</span><strong>{numericValue(item, ['itemLevel', 'itemlevel', 'ilevel', 'ilvl']) ?? '—'}</strong></li>)}</ul></details>}
+    </section>
+    <section><h4>Preparation</h4><p><b>Consumable casts:</b> {player.consumables.length ? player.consumables.join(', ') : 'No matching casts returned'}</p><p><b>Auras at pull:</b> {player.auras.length ? player.auras.join(', ') : 'Unavailable'}</p></section>
+  </div></details>
+}
+
+function ClassRoster({ players, deathsAvailable, interruptsAvailable, friendlyDamageComplete }: { players: PlayerStats[]; deathsAvailable: boolean; interruptsAvailable: boolean; friendlyDamageComplete: boolean }) {
+  const groups = new Map<string, PlayerStats[]>()
+  for (const player of [...players].sort((a, b) => (b.dps ?? -1) - (a.dps ?? -1))) {
+    const name = player.subType || 'Class unavailable'
+    groups.set(name, [...(groups.get(name) ?? []), player])
+  }
+  return <article className="analysis-card roster-card class-roster"><div className="card-heading"><div><h3>Compare players by class</h3><p>Players in the same class share a row layout for easier pull-to-pull comparison.</p></div><span>{players.length} PLAYERS</span></div>
+          {players.length === 0 ? <p className="analysis-empty">No friendly player roster was returned for this pull.</p> : Array.from(groups.entries()).map(([className, members], index) => <details className="class-group" key={className} open={index === 0}><summary><strong>{className}</strong><span>{members.length} players · sorted by DPS</span></summary><div className="analysis-table-wrap"><table><thead><tr><th>Player</th><th>DPS</th><th>HPS</th><th>Taken</th><th>Friendly dmg</th><th>Deaths</th><th>Kicks</th><th>Buff uptime*</th><th>Avg ilvl</th><th>Enchant</th><th>Gems</th></tr></thead><tbody>{members.map((player) => <tr key={player.id}><td><strong>{player.name}</strong><PlayerDetail player={player} /></td><td>{formatMetric(player.dps)}</td><td>{formatMetric(player.hps)}</td><td>{formatMetric(player.damageTaken)}</td><td>{friendlyDamageComplete ? formatMetric(player.friendlyDamage) : player.friendlyDamage === null ? '—' : `${formatMetric(player.friendlyDamage)}*`}</td><td>{deathsAvailable ? player.deaths.length : '—'}</td><td>{interruptsAvailable ? player.interrupts.length : '—'}</td><td>{player.uptimeAverage === null ? '—' : `${player.uptimeAverage.toFixed(1)}%`}</td><td>{player.averageItemLevel === null ? '—' : player.averageItemLevel.toFixed(1)}</td><td>{player.enchantCount === null ? '—' : player.enchantCount}</td><td>{player.gemCount === null ? '—' : player.gemCount}</td></tr>)}</tbody></table></div></details>)}
+    <p className="data-note">Buff uptime is the average of abilities reported for that player; compare within the same class and assignment, not as a universal benchmark.</p>
+    {!friendlyDamageComplete && <p className="data-note">* Friendly damage event data is incomplete or unavailable. A dash means the log did not provide a reliable value.</p>}
+  </article>
 }
 
 function EventCard({ title, rows, unavailable, kind, fight }: { title: string; rows: Array<Record<string, unknown>>; unavailable: boolean; kind: 'death' | 'interrupt'; fight: Fight }) {
