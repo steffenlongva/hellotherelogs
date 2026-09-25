@@ -5,6 +5,7 @@
 - Read `PROJECT_STATUS.md` before making changes. It is the durable handoff for the current product state, design decisions, known limitations, and next work.
 - Update `PROJECT_STATUS.md` whenever implementation status or priorities change enough to affect the next contributor's work.
 - The user wants completed repository work pushed to GitHub by default. After finishing a coherent change, commit it and push the branch to `origin`; do not leave completed work only in the local workspace. Never commit `.env`, credentials, tokens, local databases, or generated build output.
+- For substantial features or broad refactors, create a focused feature branch, push it, and open a GitHub pull request for review. Keep small fixes and documentation-only changes proportional; they may be committed directly to `main` unless the user asks otherwise.
 - Keep `README.md` focused on setup and user-facing behavior. Put contributor handoff and roadmap details in `PROJECT_STATUS.md`.
 
 ## Project Structure & Module Organization

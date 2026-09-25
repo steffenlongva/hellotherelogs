@@ -52,4 +52,4 @@ The user runs Docker from Ubuntu in WSL 2 and accesses it from a Windows 11 host
 
 ## Publishing preference
 
-The user explicitly wants repository work pushed to GitHub by default. Finish coherent changes with a commit and push to the current `origin` branch. Check status and review staged files first; never stage `.env`, secrets, databases, or build output. Current upstream is `origin` (`https://github.com/steffenlongva/hellotherelogs.git`); current branch at last handoff was `main`.
+The user explicitly wants repository work pushed to GitHub by default. Finish coherent changes with a commit and push; do not leave completed work only in the local workspace. For substantial features or broad refactors, create a focused feature branch, push it, and open a GitHub pull request. Small fixes and documentation-only changes can go directly to `main` unless the user says otherwise. Check status and review staged files first; never stage `.env`, secrets, databases, or build output. Upstream is `origin` (`https://github.com/steffenlongva/hellotherelogs.git`).
