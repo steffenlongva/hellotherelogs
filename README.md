@@ -12,7 +12,7 @@ Unraid can run the prebuilt app images from GitHub Container Registry (GHCR); it
 Pushes to `main` publish the `latest` tag and a commit-specific `sha-...` tag. Version tags such as `v1.2.0` publish matching image tags. Pull requests build both images without publishing them.
 
 1. After the first workflow run, open each image package under the GitHub account's **Packages** tab. In **Package settings**, change visibility to **Public** if you want Unraid to pull without registry credentials. GHCR personal packages are private by default. Making a package public is a permanent visibility change on GitHub. If you prefer private packages, keep them private and sign in to GHCR on Unraid with a GitHub personal access token (classic) that has `read:packages` permission.
-2. Copy or clone this repository on Unraid, for example under `/mnt/user/appdata/hellotherelogs`. The source is only needed for the Compose and environment files; Compose pulls the published images and does not build them.
+2. Install the community **Compose Manager Plus** plugin from the Unraid Apps tab, after checking that it supports your Unraid version. Clone this repository on Unraid, for example under `/mnt/user/appdata/hellotherelogs`, and add `docker-compose.unraid.yml` as a stack. GitHub builds and publishes the images; Unraid pulls them. This keeps GitHub out of your home network and avoids installing a GitHub runner or SSH deploy credential on Unraid.
 3. Copy `.env.unraid.example` to `.env` in that directory and enter `WCL_CLIENT_ID` and `WCL_CLIENT_SECRET` from your Warcraft Logs V2 API client. Keep this file private; credentials are passed only to the backend container.
 4. From the directory containing the files, run:
 
@@ -21,9 +21,9 @@ Pushes to `main` publish the `latest` tag and a commit-specific `sha-...` tag. V
    docker compose -f docker-compose.unraid.yml up -d
    ```
 
-5. Open `http://UNRAID_ADDRESS:8080`. Set `HELLOTHERELOGS_PORT` in `.env` to use a different host port. SQLite data is stored in the named `hellotherelogs_data` volume and remains across container updates.
+5. Open `http://UNRAID_ADDRESS:8080`. Set `HELLOTHERELOGS_PORT` in `.env` to use a different host port. SQLite data is stored under `/mnt/user/appdata/hellotherelogs/data` by default and remains across container updates; override `HELLOTHERELOGS_DATA_PATH` if you choose a different path.
 
-To update to the latest main build, run the same `pull` and `up -d` commands again. For a reproducible deployment, set both image variables in `.env` to the same `sha-...` tag or release tag instead of `latest`. Back up the `hellotherelogs_data` volume along with your other app data.
+To enable automatic updates, configure a scheduled image pull/update for this stack in Compose Manager Plus. It will pull the latest main images and recreate the containers on its schedule, causing a short restart. For a reproducible deployment, set both image variables in `.env` to the same `sha-<full Git SHA>` tag or release tag instead of `latest`. To roll back, restore the previous SHA image tags and redeploy. Back up the appdata directory with your other Unraid app data.
 
 For a private GHCR package, log in once on Unraid before pulling:
 

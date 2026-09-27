@@ -11,7 +11,7 @@ services:
       WCL_GRAPHQL_URL: ${WCL_GRAPHQL_URL:-https://fresh.warcraftlogs.com/api/v2/client}
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:8080}
     volumes:
-      - hellotherelogs_data:/data
+      - ${HELLOTHERELOGS_DATA_PATH:-/mnt/user/appdata/hellotherelogs/data}:/data
     expose:
       - "8000"
     restart: unless-stopped
@@ -24,6 +24,3 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
-
-volumes:
-  hellotherelogs_data:
