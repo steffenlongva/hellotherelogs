@@ -20,6 +20,8 @@ hellotherelogs is a self-hosted Warcraft Logs Fresh raid analysis app, currently
 - The top bar includes persistent Dark, Light, Catppuccin Mocha, Tokyo Night, and Nord themes plus a persistent text-size slider. The default font scale is 1.1, centered in the slider's range; font sizes use `rem` so it scales the interface consistently.
 - The frontend header shows the built commit prefix and UTC build date. GitHub Actions passes both values into the frontend image so the currently deployed Unraid build can be identified after image updates.
 - The encounter page includes a four-part learning plan for survival, interrupt assignments, raid coverage, and cooldown planning. It distinguishes observed evidence from topics that need review and states where the current report data cannot confirm an issue.
+- Critical-moment names fall back to the selected-fight actor roster when WCL events provide actor IDs without names. Uptime parsing supports WCL's nested `data.auras` table shape, calculates percentages from `totalUptime` and `totalTime`, and includes a Debuffs table for class-applied debuffs.
+- Learning-plan topics use expandable disclosure cards so review steps can grow without crowding the encounter page.
 - Suggestions and summaries are evidence-led review prompts, not grades or class/spec rotation prescriptions.
 - The encounter review is organized around overall raid performance: survival, critical moments, roster composition, buff coverage, and then output context. Damage taken is presented as a signal to investigate, not automatically labeled avoidable; that judgment needs encounter mechanics and assignment context.
 - Backend diagnostics log report failures and WCL OAuth/GraphQL failures. Keep secrets and bearer tokens out of logs.

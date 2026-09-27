@@ -91,11 +91,11 @@ function tableRows(value: unknown, depth = 0): Array<Record<string, unknown>> {
   if (depth > 7 || parsed === null || parsed === undefined) return []
   if (Array.isArray(parsed)) {
     const records = parsed.filter(isRecord)
-    if (records.some((row) => ['name', 'id', 'guid', 'total', 'amount', 'timestamp', 'sourceID', 'targetID', 'type'].some((key) => row[key] !== undefined))) return records
+    if (records.some((row) => ['name', 'id', 'guid', 'total', 'totalUptime', 'amount', 'timestamp', 'sourceID', 'targetID', 'type', 'ability'].some((key) => row[key] !== undefined))) return records
     return records.flatMap((row) => tableRows(row, depth + 1))
   }
   if (!isRecord(parsed)) return []
-  for (const key of ['data', 'entries', 'events', 'actors', 'table', 'series', 'groups', 'sources', 'targets', 'players']) {
+  for (const key of ['data', 'entries', 'events', 'actors', 'auras', 'table', 'series', 'groups', 'sources', 'targets', 'players']) {
     if (parsed[key] !== undefined) {
       const rows = tableRows(parsed[key], depth + 1)
       if (rows.length) return rows
@@ -131,11 +131,13 @@ function actorId(row: Record<string, unknown>, role?: 'source' | 'target'): numb
   return Number.isFinite(id) ? id : null
 }
 
-function actorName(row: Record<string, unknown>, role?: 'source' | 'target'): string {
+function actorName(row: Record<string, unknown>, role?: 'source' | 'target', actors: Actor[] = []): string {
   const nested = role && isRecord(row[role]) ? row[role] as Record<string, unknown> : null
-  const value = (role === 'source' ? row.sourceName : role === 'target' ? row.targetName : undefined)
-    ?? row.name ?? nested?.name
-  return typeof value === 'string' ? value : 'Unknown'
+  const value = (role === 'source' ? row.sourceName : role === 'target' ? row.targetName : row.name)
+    ?? nested?.name
+  if (typeof value === 'string' && value.length) return value
+  const id = role ? actorId(row, role) : null
+  return actors.find((actor) => actor.id === id)?.name ?? 'Unknown'
 }
 
 function rowForActor(value: unknown, actor: Actor, role?: 'source' | 'target'): Record<string, unknown> | undefined {
@@ -374,7 +376,7 @@ function ReportPage({ code }: { code: string }) {
             <article className="overview-card composition-card"><span className="overview-icon tint-mint"><Swords size={17} /></span><div><strong>{playerStats.length}</strong><span>Raid roster</span></div><div className="comp-bars">{composition.map(([name, count]) => <span key={name} title={`${name}: ${count}`}><i style={{ width: `${100 * count / Math.max(1, playerStats.length)}%` }} />{name}<b>{count}</b></span>)}</div></article>
           </section>
           <TimelineCard deaths={deathEvents} interrupts={interruptEvents} analysis={analysis.data} />
-          <LearningPlan players={playerStats} deaths={deathEvents} interrupts={interruptEvents} deathsAvailable={eventDataAvailable(analysis.data.events.deaths)} interruptsAvailable={eventDataAvailable(analysis.data.events.interrupts)} />
+          <LearningPlan players={playerStats} deaths={deathEvents} interruptCount={interruptEvents.length} interruptsAvailable={eventDataAvailable(analysis.data.events.interrupts)} deathsAvailable={eventDataAvailable(analysis.data.events.deaths)} />
           <div className="leader-grid">
             <LeaderCard title="Damage" players={metricLeaders('damage')} metric="damage" tint="blue" />
             <LeaderCard title="Healing" players={metricLeaders('healing')} metric="healing" tint="mint" />
@@ -383,8 +385,8 @@ function ReportPage({ code }: { code: string }) {
           </div>
           <ClassRoster players={playerStats} deathsAvailable={eventDataAvailable(analysis.data.events.deaths)} interruptsAvailable={eventDataAvailable(analysis.data.events.interrupts)} friendlyDamageComplete={analysis.data.tables.friendly_damage_complete === true} />
           <div className="analysis-grid">
-            <UptimeCard title="Raid buff coverage" value={analysis.data.tables.buff_uptimes} />
-            <UptimeCard title="Ability uptime" value={analysis.data.tables.ability_uptimes} />
+            <UptimeCard title="Raid buff coverage" sources={[{ label: 'Buff', value: analysis.data.tables.buff_uptimes }]} durationMs={analysis.data.fight.duration_ms} />
+            <UptimeCard title="Buff & debuff ability uptime" sources={[{ label: 'Buff', value: analysis.data.tables.ability_uptimes }, { label: 'Debuff', value: analysis.data.tables.debuff_uptimes }]} durationMs={analysis.data.fight.duration_ms} />
             <LeaderCard title="Damage taken · review" players={metricLeaders('damageTaken')} metric="damageTaken" tint="pink" />
           </div>
         </>}
@@ -402,7 +404,7 @@ function ReportPage({ code }: { code: string }) {
 
 function formatMetric(value: number | null): string { return value === null ? '—' : Math.round(value).toLocaleString() }
 
-function LearningPlan({ players, deaths, interrupts, deathsAvailable, interruptsAvailable }: { players: PlayerStats[]; deaths: Array<Record<string, unknown>>; interrupts: Array<Record<string, unknown>>; deathsAvailable: boolean; interruptsAvailable: boolean }) {
+function LearningPlan({ players, deaths, interruptCount, deathsAvailable, interruptsAvailable }: { players: PlayerStats[]; deaths: Array<Record<string, unknown>>; interruptCount: number; deathsAvailable: boolean; interruptsAvailable: boolean }) {
   const deathTimes = deaths.map((row) => Number(row.timestamp)).filter(Number.isFinite).sort((a, b) => a - b)
   const clusteredDeaths = deathTimes.some((time, index) => deathTimes.slice(index + 1).some((later) => later - time <= 10_000))
   const classCounts = new Map<string, number>()
@@ -412,10 +414,10 @@ function LearningPlan({ players, deaths, interrupts, deathsAvailable, interrupts
   return <section className="learning-plan" aria-labelledby="learning-plan-title">
     <div className="learning-heading"><div><span className="eyebrow">TURN THE LOG INTO PRACTICE</span><h3 id="learning-plan-title">What to learn for the next pull</h3><p>Choose one team habit to review, agree on a response, then check the next attempt for the same moment.</p></div><span className="learning-count">4 REVIEW TOPICS</span></div>
     <div className="learning-grid">
-      <article className="learning-card"><span className="learning-number">01 / SURVIVAL</span><h4>{deathsAvailable ? `${deaths.length} deaths to review` : 'Death data unavailable'}</h4><p>{deathsAvailable && deaths.length ? 'Use the timeline and each player recap to find the last damaging mechanic, then check whether movement, positioning, healing, or a personal defensive could change the outcome.' : 'Open the timeline on a wipe or pull with deaths. Trace the mechanic and response before deciding whether damage was avoidable.'}</p><small>{deathsAvailable && deaths.length ? (clusteredDeaths ? 'Several deaths landed within 10 seconds: review raid-wide damage and defensive coverage together.' : 'Ask each player what they saw and which response they will try next time.') : 'Damage taken alone cannot tell expected damage from a mistake.'}</small></article>
-      <article className="learning-card"><span className="learning-number">02 / INTERRUPTS</span><h4>{interruptsAvailable ? `${interrupts.length} kicks recorded` : 'Kick events unavailable'}</h4><p>Use successful kicks to map who covered each cast. Then check the enemy cast timeline in Warcraft Logs for casts that finished, and assign a primary kicker plus a backup.</p><small>{interruptsAvailable ? 'A low kick count is not proof of missed kicks; this view does not yet collect failed interrupt opportunities.' : 'Review cast coverage directly in Warcraft Logs for this pull.'}</small></article>
-      <article className="learning-card"><span className="learning-number">03 / RAID COVERAGE</span><h4>Match buffs and utility to this roster</h4><p>{classSummary ? `This pull had ${classSummary}. Compare the class mix and reported buff rows with the utility your strategy expects.` : 'Compare the raid composition and reported buff rows with the utility your strategy expects.'}</p><small>{observedBuffs.length ? `Reported examples: ${observedBuffs.join(', ')}. Confirm provider, target, and assignment before calling coverage low.` : 'Buff rows are not a complete list of external buffs; confirm coverage and ownership in the log.'}</small></article>
-      <article className="learning-card"><span className="learning-number">04 / COOLDOWNS</span><h4>Plan defensive coverage before danger windows</h4><p>Mark the next high-damage phase on the timeline. Assign raid defensives and personal cooldown reminders around it, then compare casts and deaths on the next pull.</p><small>This report does not yet identify unused cooldowns, so treat this as a planning prompt rather than a finding.</small></article>
+      <details className="learning-card"><summary><span className="learning-number">01 / SURVIVAL</span><h4>{deathsAvailable ? `${deaths.length} deaths to review` : 'Death data unavailable'}</h4><span className="learning-expand">Read review steps</span></summary><div className="learning-content"><p>{deathsAvailable && deaths.length ? 'Use the timeline and each player recap to find the last damaging mechanic, then check whether movement, positioning, healing, or a personal defensive could change the outcome.' : 'Open the timeline on a wipe or pull with deaths. Trace the mechanic and response before deciding whether damage was avoidable.'}</p><small>{deathsAvailable && deaths.length ? (clusteredDeaths ? 'Several deaths landed within 10 seconds: review raid-wide damage and defensive coverage together.' : 'Ask each player what they saw and which response they will try next time.') : 'Damage taken alone cannot tell expected damage from a mistake.'}</small></div></details>
+      <details className="learning-card"><summary><span className="learning-number">02 / INTERRUPTS</span><h4>{interruptsAvailable ? `${interruptCount} kicks recorded` : 'Kick events unavailable'}</h4><span className="learning-expand">Read review steps</span></summary><div className="learning-content"><p>Use successful kicks to map who covered each cast. Then check the enemy cast timeline in Warcraft Logs for casts that finished, and assign a primary kicker plus a backup.</p><small>{interruptsAvailable ? 'A low kick count is not proof of missed kicks; this view does not yet collect failed interrupt opportunities.' : 'Review cast coverage directly in Warcraft Logs for this pull.'}</small></div></details>
+      <details className="learning-card"><summary><span className="learning-number">03 / RAID COVERAGE</span><h4>Match buffs and utility to this roster</h4><span className="learning-expand">Read review steps</span></summary><div className="learning-content"><p>{classSummary ? `This pull had ${classSummary}. Compare the class mix and reported buff rows with the utility your strategy expects.` : 'Compare the raid composition and reported buff rows with the utility your strategy expects.'}</p><small>{observedBuffs.length ? `Reported examples: ${observedBuffs.join(', ')}. Confirm provider, target, and assignment before calling coverage low.` : 'Buff rows are not a complete list of external buffs; confirm coverage and ownership in the log.'}</small></div></details>
+      <details className="learning-card"><summary><span className="learning-number">04 / COOLDOWNS</span><h4>Plan defensive coverage before danger windows</h4><span className="learning-expand">Read review steps</span></summary><div className="learning-content"><p>Mark the next high-damage phase on the timeline. Assign raid defensives and personal cooldown reminders around it, then compare casts and deaths on the next pull.</p><small>This report does not yet identify unused cooldowns, so treat this as a planning prompt rather than a finding.</small></div></details>
     </div>
     <div className="learning-loop"><strong>Make it stick</strong><span>Pick one topic · name an owner · agree on a response · compare the same moment next pull</span></div>
   </section>
@@ -492,15 +494,15 @@ function TimelineCard({ deaths, interrupts, analysis }: { deaths: Array<Record<s
         {events.map(({ row, kind }, index) => {
           const timestamp = Number(row.timestamp)
           const relative = Math.max(0, timestamp - fight.start_time_ms)
-          return <span className={`timeline-marker ${kind}`} key={`${kind}-${index}`} style={{ left: `${Math.min(100, 100 * relative / duration)}%` }} title={`${formatDuration(relative)} · ${kind === 'death' ? actorName(row, 'target') : actorName(row, 'source')}`} />
+          return <span className={`timeline-marker ${kind}`} key={`${kind}-${index}`} style={{ left: `${Math.min(100, 100 * relative / duration)}%` }} title={`${formatDuration(relative)} · ${kind === 'death' ? actorName(row, 'target', analysis.actors) : actorName(row, 'source', analysis.actors)}`} />
         })}
       </div>
       <div className="timeline-legend"><span><i className="death" /> Death</span><span><i className="interrupt" /> Interrupt landed</span>{!interruptsAvailable && <small>Interrupt data unavailable</small>}</div>
       <div className="moment-list">{events.map(({ row, kind }, index) => {
         const relative = Math.max(0, Number(row.timestamp) - fight.start_time_ms)
         const ability = isRecord(row.killingAbility) ? row.killingAbility.name : isRecord(row.ability) ? row.ability.name : row.abilityName
-        const source = actorName(row, kind === 'death' ? 'source' : 'target')
-        const actor = actorName(row, kind === 'death' ? 'target' : 'source')
+        const source = actorName(row, kind === 'death' ? 'source' : 'target', analysis.actors)
+        const actor = actorName(row, kind === 'death' ? 'target' : 'source', analysis.actors)
         return <div className="moment-row" key={`${kind}-row-${index}`}><time>{formatDuration(relative)}</time><span className={`moment-tag ${kind}`}>{kind === 'death' ? 'DEATH' : 'KICK'}</span><strong>{actor}</strong><span>{typeof ability === 'string' ? ability : kind === 'death' ? 'Final recorded event' : 'Interrupt landed'}</span>{kind === 'death' && source !== 'Unknown' && <small>Source: {source}</small>}</div>
       })}</div>
     </>}
@@ -508,19 +510,39 @@ function TimelineCard({ deaths, interrupts, analysis }: { deaths: Array<Record<s
   </article>
 }
 
-function UptimeCard({ title, value }: { title: string; value: unknown }) {
-  const rows = tableRows(value).map((row) => {
-    const raw = row.uptimePercent ?? row.uptime ?? row.percent ?? row.percentage
-    let percent = typeof raw === 'string' && raw.endsWith('%') ? Number.parseFloat(raw) : numericValue(row, ['uptimePercent', 'uptime', 'percent', 'percentage'])
-    if (percent !== null && percent > 100) percent = null
-    const ability = isRecord(row.ability) ? String(row.ability.name ?? row.name ?? 'Unknown buff') : String(row.name ?? (isRecord(row.ability) ? row.ability.name : 'Unknown buff'))
-    const source = typeof row.sourceName === 'string' ? row.sourceName : isRecord(row.source) && typeof row.source.name === 'string' ? row.source.name : null
-    return { row, ability, source, percent }
-  }).filter((row) => row.ability !== 'Unknown buff' || row.percent !== null)
-  const ordered = [...rows].sort((a, b) => (b.percent ?? -1) - (a.percent ?? -1)).slice(0, 10)
-  return <article className="analysis-card uptime-card"><div className="card-heading"><div><h3>{title}</h3><p>Reported buff presence in this pull</p></div><span>{rows.length ? `${rows.length} BUFFS` : 'NO DATA'}</span></div>
-    {!ordered.length ? <p className="analysis-empty">Buff uptime rows were not returned in a readable form for this pull.</p> : <div className="uptime-list">{ordered.map((item, index) => <div className="uptime-row" key={`${item.ability}-${index}`}><div><strong>{item.ability}</strong><small>{item.source ? `Provided by ${item.source}` : 'Provider not identified in this response'}</small></div><span className="uptime-meter"><i style={{ width: `${Math.max(0, Math.min(100, item.percent ?? 0))}%` }} /></span><b>{item.percent === null ? '—' : `${item.percent.toFixed(1)}%`}</b></div>)}</div>}
-    <p className="data-note">External source is shown only when Warcraft Logs includes it. Compare expected buffs with raid composition, assignment, and encounter timing.</p>
+function tableTotalTime(value: unknown, depth = 0): number | null {
+  const parsed = parseJSON(value)
+  if (depth > 7 || !isRecord(parsed)) return null
+  const totalTime = numericValue(parsed, ['totalTime'])
+  if (totalTime !== null) return totalTime
+  for (const key of ['data', 'table']) {
+    if (parsed[key] !== undefined) {
+      const nested = tableTotalTime(parsed[key], depth + 1)
+      if (nested !== null) return nested
+    }
+  }
+  return null
+}
+
+function UptimeCard({ title, sources, durationMs }: { title: string; sources: Array<{ label: string; value: unknown }>; durationMs: number }) {
+  const rows = sources.flatMap(({ label, value }) => {
+    const totalTime = tableTotalTime(value) ?? durationMs
+    return tableRows(value).map((row) => {
+      const raw = row.uptimePercent ?? row.uptime ?? row.percent ?? row.percentage
+      let percent = typeof raw === 'string' && raw.endsWith('%') ? Number.parseFloat(raw) : numericValue(row, ['uptimePercent', 'uptime', 'percent', 'percentage'])
+      const totalUptime = numericValue(row, ['totalUptime'])
+      if (percent === null && totalUptime !== null && totalTime > 0) percent = 100 * totalUptime / totalTime
+      if (percent !== null && percent > 100) percent = null
+      const ability = isRecord(row.ability) ? String(row.ability.name ?? row.name ?? 'Unknown ability') : String(row.name ?? 'Unknown ability')
+      const source = typeof row.sourceName === 'string' ? row.sourceName : isRecord(row.source) && typeof row.source.name === 'string' ? row.source.name : null
+      return { row, ability, source, percent, label }
+    })
+  }).filter((row) => row.ability !== 'Unknown ability' || row.percent !== null)
+  const labels = [...new Set(sources.map((source) => source.label))]
+  const ordered = labels.flatMap((label) => [...rows.filter((row) => row.label === label)].sort((a, b) => (b.percent ?? -1) - (a.percent ?? -1)).slice(0, 10))
+  return <article className="analysis-card uptime-card"><div className="card-heading"><div><h3>{title}</h3><p>Reported aura presence in this pull</p></div><span>{rows.length ? `${rows.length} ROWS` : 'NO DATA'}</span></div>
+    {!ordered.length ? <p className="analysis-empty">No readable uptime rows were returned for this pull.</p> : <div className="uptime-list">{ordered.map((item, index) => <div className="uptime-row" key={`${item.label}-${item.ability}-${index}`}><div><strong>{item.ability}</strong><small>{item.source ? `${item.label} · provided by ${item.source}` : `${item.label} · provider not identified`}</small></div><span className="uptime-meter"><i style={{ width: `${Math.max(0, Math.min(100, item.percent ?? 0))}%` }} /></span><b>{item.percent === null ? '—' : `${item.percent.toFixed(1)}%`}</b></div>)}</div>}
+    <p className="data-note">Percentages use Warcraft Logs total uptime over the reported table time. Debuff uptime shows time present on logged targets; multiple targets can contribute to an ability total.</p>
   </article>
 }
 
