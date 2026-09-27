@@ -1,7 +1,7 @@
 import { FormEvent, ReactNode, useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import './analysis.css'
-import { Activity, ArrowLeft, ArrowUpRight, Check, CircleHelp, Clock3, Command, ExternalLink, LoaderCircle, Moon, Skull, Sun, Swords, Trophy } from 'lucide-react'
+import { Activity, ArrowLeft, ArrowUpRight, Check, CircleHelp, Clock3, Command, ExternalLink, LoaderCircle, Moon, Shield, Skull, Sun, Swords, Trophy } from 'lucide-react'
 
 type Health = { status: string; service: string }
 type Fight = {
@@ -315,6 +315,11 @@ function ReportPage({ code }: { code: string }) {
   const playerStats = useMemo(() => analysis.data ? makePlayerStats(analysis.data) : [], [analysis.data])
   const deathEvents = analysis.data ? tableRows(analysis.data.events.deaths) : []
   const interruptEvents = analysis.data ? tableRows(analysis.data.events.interrupts) : []
+  const composition = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const player of playerStats) counts.set(player.subType || 'Unknown class', (counts.get(player.subType || 'Unknown class') ?? 0) + 1)
+    return [...counts.entries()].sort((a, b) => b[1] - a[1])
+  }, [playerStats])
   const metricLeaders = (key: 'damage' | 'healing' | 'damageTaken' | 'friendlyDamage') => [...playerStats].filter((player) => player[key] !== null && (key !== 'friendlyDamage' || player.friendlyDamageReliable)).sort((a, b) => (b[key] ?? 0) - (a[key] ?? 0)).slice(0, playerStats.length)
 
   return <main className="shell report-shell">
@@ -357,7 +362,13 @@ function ReportPage({ code }: { code: string }) {
         {analysis.isLoading && <div className="minor-loading"><LoaderCircle className="spin" size={14} /> LOADING DAMAGE, HEALING, SURVIVABILITY, INTERRUPTS & UPTIME</div>}
         {analysis.isError && <div className="inline-error">Encounter analysis unavailable: {analysis.error.message}</div>}
         {analysis.data && <>
-          <div className="review-notes"><h3>Pull review</h3><p>Showing {playerStats.length} friendly players recorded in this pull. Compare output alongside assignments, role and encounter mechanics. Friendly damage means outgoing damage from one raid player to another; NPC damage is excluded.</p><small>Suggestions use observable log evidence. Missing data is shown as unavailable; a zero is only shown when the event data is present.</small></div>
+          <div className="review-notes"><h3>Raid review</h3><p>Start with survival, dangerous moments, and raid coverage. Use damage and healing as context for what happened; they do not measure raid performance on their own.</p><small>Damage taken is a review signal, not an avoidable damage verdict. Buff expectations depend on role, assignment, encounter timing, and the composition.</small></div>
+          <section className="raid-overview" aria-label="Raid review overview">
+            <article className="overview-card"><span className="overview-icon tint-pink"><Skull size={17} /></span><div><strong>{eventDataAvailable(analysis.data.events.deaths) ? deathEvents.length : '—'}</strong><span>Deaths recorded</span></div><small>Review the moments before each death</small></article>
+            <article className="overview-card"><span className="overview-icon tint-blue"><Shield size={17} /></span><div><strong>{eventDataAvailable(analysis.data.events.interrupts) ? interruptEvents.length : '—'}</strong><span>Interrupts landed</span></div><small>Compare with assigned casts and misses</small></article>
+            <article className="overview-card composition-card"><span className="overview-icon tint-mint"><Swords size={17} /></span><div><strong>{playerStats.length}</strong><span>Raid roster</span></div><div className="comp-bars">{composition.map(([name, count]) => <span key={name} title={`${name}: ${count}`}><i style={{ width: `${100 * count / Math.max(1, playerStats.length)}%` }} />{name}<b>{count}</b></span>)}</div></article>
+          </section>
+          <TimelineCard deaths={deathEvents} interrupts={interruptEvents} analysis={analysis.data} />
           <div className="leader-grid">
             <LeaderCard title="Damage" players={metricLeaders('damage')} metric="damage" tint="blue" />
             <LeaderCard title="Healing" players={metricLeaders('healing')} metric="healing" tint="mint" />
@@ -365,14 +376,10 @@ function ReportPage({ code }: { code: string }) {
             <LeaderCard title="Friendly fire dealt" players={metricLeaders('friendlyDamage')} metric="friendlyDamage" tint="lavender" />
           </div>
           <ClassRoster players={playerStats} deathsAvailable={eventDataAvailable(analysis.data.events.deaths)} interruptsAvailable={eventDataAvailable(analysis.data.events.interrupts)} friendlyDamageComplete={analysis.data.tables.friendly_damage_complete === true} />
-          <div className="detail-grid">
-            <EventCard title="Deaths" rows={deathEvents} unavailable={!eventDataAvailable(analysis.data.events.deaths)} kind="death" fight={analysis.data.fight} />
-            <EventCard title="Interrupts" rows={interruptEvents} unavailable={!eventDataAvailable(analysis.data.events.interrupts)} kind="interrupt" fight={analysis.data.fight} />
-          </div>
           <div className="analysis-grid">
-            <AnalysisTable title="Player buff uptime" value={analysis.data.tables.buff_uptimes} />
-            <AnalysisTable title="Ability uptime across the raid" value={analysis.data.tables.ability_uptimes} />
-            <AnalysisTable title="Cast activity" value={analysis.data.tables.casts} />
+            <UptimeCard title="Raid buff coverage" value={analysis.data.tables.buff_uptimes} />
+            <UptimeCard title="Ability uptime" value={analysis.data.tables.ability_uptimes} />
+            <LeaderCard title="Damage taken · review" players={metricLeaders('damageTaken')} metric="damageTaken" tint="pink" />
           </div>
         </>}
       </section>
@@ -400,7 +407,7 @@ function playerSuggestions(player: PlayerStats): string[] {
   if (player.deaths.length) notes.push(`${player.deaths.length} death${player.deaths.length === 1 ? '' : 's'} recorded. Review the final damage events and defensive timing around each death.`)
   if (player.friendlyDamageReliable && (player.friendlyDamage ?? 0) > 0) {
     const ability = [...player.friendlyDamageAbilities].sort((a, b) => b.amount - a.amount)[0]
-    notes.push(`Dealt ${formatMetric(player.friendlyDamage)} friendly damage${ability ? `, mostly from ${ability.name}` : ''}. Review target selection and avoidable cleave.`)
+    notes.push(`Dealt ${formatMetric(player.friendlyDamage)} friendly damage${ability ? `, mostly from ${ability.name}` : ''}. Review target selection and cleave timing in encounter context.`)
   }
   const lowestUptime = [...player.uptimes].filter((ability) => ability.percent !== null).sort((a, b) => (a.percent ?? 0) - (b.percent ?? 0))[0]
   if (lowestUptime?.percent !== null && lowestUptime) notes.push(`${lowestUptime.name} uptime was ${lowestUptime.percent.toFixed(1)}% in this pull. Check whether the buff was expected for this role and assignment.`)
@@ -439,6 +446,57 @@ function ClassRoster({ players, deathsAvailable, interruptsAvailable, friendlyDa
 
 function EventCard({ title, rows, unavailable, kind, fight }: { title: string; rows: Array<Record<string, unknown>>; unavailable: boolean; kind: 'death' | 'interrupt'; fight: Fight }) {
   return <article className="analysis-card event-card"><div className="card-heading"><div><h3>{title}</h3><p>Encounter event timeline</p></div><span>{unavailable ? 'UNAVAILABLE' : `${rows.length} EVENTS`}</span></div>{unavailable ? <p className="analysis-empty">The log response did not include this event data.</p> : rows.length === 0 ? <p className="analysis-empty">No {kind} events were recorded for this pull.</p> : <div className="event-list">{rows.map((row, index) => { const time = Number(row.timestamp); const relative = Number.isFinite(time) ? Math.max(0, time - fight.start_time_ms) : null; return <div className="event-row" key={`${index}-${String(row.timestamp ?? '')}`}><time>{relative === null ? '—' : formatDuration(relative)}</time><strong>{actorName(row, kind === 'death' ? 'target' : 'source')}</strong><span>{String((isRecord(row.ability) && row.ability.name) || row.abilityName || row.name || (kind === 'death' ? 'Death' : 'Interrupt'))}</span>{kind === 'death' && <small>{String((isRecord(row.killingAbility) && row.killingAbility.name) || row.killerName || '')}</small>}</div>})}</div>}</article>
+}
+
+function TimelineCard({ deaths, interrupts, analysis }: { deaths: Array<Record<string, unknown>>; interrupts: Array<Record<string, unknown>>; analysis: FightAnalysis }) {
+  const fight = analysis.fight
+  const events = [
+    ...deaths.map((row) => ({ row, kind: 'death' as const })),
+    ...interrupts.map((row) => ({ row, kind: 'interrupt' as const })),
+  ].map((event) => ({ ...event, timestamp: Number(event.row.timestamp) }))
+    .filter((event) => Number.isFinite(event.timestamp))
+    .sort((a, b) => a.timestamp - b.timestamp)
+  const deathsAvailable = eventDataAvailable(analysis.events.deaths)
+  const interruptsAvailable = eventDataAvailable(analysis.events.interrupts)
+  const duration = Math.max(1, fight.duration_ms)
+  return <article className="analysis-card timeline-card">
+    <div className="card-heading"><div><h3>Critical moments</h3><p>Deaths and successful interrupts across this pull</p></div><span>{formatDuration(fight.duration_ms)}</span></div>
+    {!deathsAvailable && !interruptsAvailable ? <p className="analysis-empty">Timeline event data was not returned for this pull.</p> : events.length === 0 ? <p className="analysis-empty">No death or interrupt events were recorded. Missed or non-interruptible casts are not represented here.</p> : <>
+      <div className="timeline-axis"><span>0:00</span><span>{formatDuration(fight.duration_ms / 2)}</span><span>{formatDuration(fight.duration_ms)}</span></div>
+      <div className="timeline-track" role="img" aria-label={`${deaths.length} deaths and ${interrupts.length} interrupts during the pull`}>
+        {events.map(({ row, kind }, index) => {
+          const timestamp = Number(row.timestamp)
+          const relative = Math.max(0, timestamp - fight.start_time_ms)
+          return <span className={`timeline-marker ${kind}`} key={`${kind}-${index}`} style={{ left: `${Math.min(100, 100 * relative / duration)}%` }} title={`${formatDuration(relative)} · ${kind === 'death' ? actorName(row, 'target') : actorName(row, 'source')}`} />
+        })}
+      </div>
+      <div className="timeline-legend"><span><i className="death" /> Death</span><span><i className="interrupt" /> Interrupt landed</span>{!interruptsAvailable && <small>Interrupt data unavailable</small>}</div>
+      <div className="moment-list">{events.map(({ row, kind }, index) => {
+        const relative = Math.max(0, Number(row.timestamp) - fight.start_time_ms)
+        const ability = isRecord(row.killingAbility) ? row.killingAbility.name : isRecord(row.ability) ? row.ability.name : row.abilityName
+        const source = actorName(row, kind === 'death' ? 'source' : 'target')
+        const actor = actorName(row, kind === 'death' ? 'target' : 'source')
+        return <div className="moment-row" key={`${kind}-row-${index}`}><time>{formatDuration(relative)}</time><span className={`moment-tag ${kind}`}>{kind === 'death' ? 'DEATH' : 'KICK'}</span><strong>{actor}</strong><span>{typeof ability === 'string' ? ability : kind === 'death' ? 'Final recorded event' : 'Interrupt landed'}</span>{kind === 'death' && source !== 'Unknown' && <small>Source: {source}</small>}</div>
+      })}</div>
+    </>}
+    <p className="data-note">Death markers show the recorded death moment and available killing ability. A full pre-death damage recap needs incoming damage events and encounter mechanics.</p>
+  </article>
+}
+
+function UptimeCard({ title, value }: { title: string; value: unknown }) {
+  const rows = tableRows(value).map((row) => {
+    const raw = row.uptimePercent ?? row.uptime ?? row.percent ?? row.percentage
+    let percent = typeof raw === 'string' && raw.endsWith('%') ? Number.parseFloat(raw) : numericValue(row, ['uptimePercent', 'uptime', 'percent', 'percentage'])
+    if (percent !== null && percent > 100) percent = null
+    const ability = isRecord(row.ability) ? String(row.ability.name ?? row.name ?? 'Unknown buff') : String(row.name ?? (isRecord(row.ability) ? row.ability.name : 'Unknown buff'))
+    const source = typeof row.sourceName === 'string' ? row.sourceName : isRecord(row.source) && typeof row.source.name === 'string' ? row.source.name : null
+    return { row, ability, source, percent }
+  }).filter((row) => row.ability !== 'Unknown buff' || row.percent !== null)
+  const ordered = [...rows].sort((a, b) => (b.percent ?? -1) - (a.percent ?? -1)).slice(0, 10)
+  return <article className="analysis-card uptime-card"><div className="card-heading"><div><h3>{title}</h3><p>Reported buff presence in this pull</p></div><span>{rows.length ? `${rows.length} BUFFS` : 'NO DATA'}</span></div>
+    {!ordered.length ? <p className="analysis-empty">Buff uptime rows were not returned in a readable form for this pull.</p> : <div className="uptime-list">{ordered.map((item, index) => <div className="uptime-row" key={`${item.ability}-${index}`}><div><strong>{item.ability}</strong><small>{item.source ? `Provided by ${item.source}` : 'Provider not identified in this response'}</small></div><span className="uptime-meter"><i style={{ width: `${Math.max(0, Math.min(100, item.percent ?? 0))}%` }} /></span><b>{item.percent === null ? '—' : `${item.percent.toFixed(1)}%`}</b></div>)}</div>}
+    <p className="data-note">External source is shown only when Warcraft Logs includes it. Compare expected buffs with raid composition, assignment, and encounter timing.</p>
+  </article>
 }
 
 function AnalysisTable({ title, value }: { title: string; value: unknown }) {
