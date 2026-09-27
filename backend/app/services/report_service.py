@@ -65,6 +65,7 @@ query HelloThereLogsFightAnalysis($code: String!, $fightId: Int!) {
       interrupts: table(dataType: Interrupts, fightIDs: [$fightId], viewBy: Source)
       buffUptimes: table(dataType: Buffs, fightIDs: [$fightId], viewBy: Target)
       abilityUptimes: table(dataType: Buffs, fightIDs: [$fightId], viewBy: Ability)
+      debuffUptimes: table(dataType: Debuffs, fightIDs: [$fightId], viewBy: Ability)
       interruptEvents: events(dataType: Interrupts, fightIDs: [$fightId], limit: 10000, useActorIDs: true, useAbilityIDs: true) { data nextPageTimestamp }
       combatantInfo: events(dataType: CombatantInfo, fightIDs: [$fightId], limit: 10000, useActorIDs: true, useAbilityIDs: true) { data nextPageTimestamp }
       playerDetails: playerDetails(fightIDs: [$fightId], includeCombatantInfo: true)
@@ -130,7 +131,7 @@ class ReportService:
         fight = next((item for item in report["fights"] if item["fight_id"] == fight_id), None)
         if fight is None:
             raise ReportNotFoundError("Fight was not found in this report.")
-        cache_key = f"analysis:v3:{code}:{fight_id}"
+        cache_key = f"analysis:v4:{code}:{fight_id}"
         cached = self.cache.get(cache_key)
         if cached is not None:
             return cached
@@ -189,6 +190,7 @@ class ReportService:
                 "interrupts": raw_report.get("interrupts"),
                 "buff_uptimes": raw_report.get("buffUptimes"),
                 "ability_uptimes": raw_report.get("abilityUptimes"),
+                "debuff_uptimes": raw_report.get("debuffUptimes"),
             },
             "events": {
                 "deaths": raw_report.get("deaths"),
