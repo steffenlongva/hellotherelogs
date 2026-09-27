@@ -17,7 +17,9 @@ hellotherelogs is a self-hosted Warcraft Logs Fresh raid analysis app, currently
 - A selected-pull review endpoint uses the selected fight's `friendlyPlayers` roster, WCL tables for damage, healing, damage taken, friendly fire, casts, interrupts, and buffs, plus death/interrupt/combatant events and player details where available. Results are cached using the existing SQLite cache and TTL.
 - The analysis dashboard groups player comparisons by class, makes full leaderboards expandable, shows player and ability uptime, and gives per-player review prompts tied to recorded deaths, friendly fire, and uptime observations. It computes friendly fire from outgoing damage events where both source and target belong to the selected fight roster; NPC-target damage is excluded. Friendly fire is marked incomplete if event data is unavailable or still paginated after the bounded page fetch.
 - Itemization summaries show average item level and separate enchant/gem counts and details, alongside auras and consumable-like casts. Missing event/detail payloads are labeled as unavailable. Consumables are identified heuristically by cast name; gear enrichment depends on WCL player detail payloads.
-- The top bar includes a persistent light/dark selector and a persistent text-size control. Font sizes use `rem` so the control scales the interface consistently.
+- The top bar includes persistent Dark, Light, Catppuccin Mocha, Tokyo Night, and Nord themes plus a persistent text-size slider. The default font scale is 1.1, centered in the slider's range; font sizes use `rem` so it scales the interface consistently.
+- The frontend header shows the built commit prefix and UTC build date. GitHub Actions passes both values into the frontend image so the currently deployed Unraid build can be identified after image updates.
+- The encounter page includes a four-part learning plan for survival, interrupt assignments, raid coverage, and cooldown planning. It distinguishes observed evidence from topics that need review and states where the current report data cannot confirm an issue.
 - Suggestions and summaries are evidence-led review prompts, not grades or class/spec rotation prescriptions.
 - The encounter review is organized around overall raid performance: survival, critical moments, roster composition, buff coverage, and then output context. Damage taken is presented as a signal to investigate, not automatically labeled avoidable; that judgment needs encounter mechanics and assignment context.
 - Backend diagnostics log report failures and WCL OAuth/GraphQL failures. Keep secrets and bearer tokens out of logs.
@@ -36,15 +38,14 @@ hellotherelogs is a self-hosted Warcraft Logs Fresh raid analysis app, currently
 
 The current review is a first functional data layer, not the finished guild coach. In particular:
 
-1. Validate analysis table shapes against representative Fresh reports. The current page makes roster mix, reported buff coverage, and death/interrupt moments easier to scan; source attribution and uptime meaning still depend on the actual WCL payload.
-2. Add incoming damage events around each death so the timeline can show a short pre-death recap. Keep “avoidable” classification out until encounter-specific mechanics and player assignments can support it.
-3. Add missed dangerous casts and interrupt opportunities; successful interrupts alone do not show whether kick coverage was complete.
-4. Identify external raid buffs reliably from provider/target fields, then compare coverage with the classes present and fight timing. Do not infer a missing buff from a low generic uptime average.
-5. Build per-player and raid evidence summaries across pulls and progression attempts; distinguish role, class, assignment, fight length, and kill/wipe context.
-6. Add class/spec/game-version-aware suggestions backed by explicit evidence or maintained rules. Keep recommendations explainable and label uncertainty; avoid unsupported benchmark claims.
-7. Validate gear, gems, enchants, and consumables against real response samples; current enrichment shows reported item level/enchant/gem fields and detects likely consumable casts by name.
-8. Finish paging death and interrupt event streams, and handle archive/access failures and API rate limits deliberately. Friendly damage follows event pagination with a bounded six-page cap. Cache expensive report analysis using the existing cache.
-9. Add mocked backend coverage for analysis response shapes, invalid fight IDs, caching, and WCL failures. Build the frontend in an environment with npm dependencies installed.
+1. Validate analysis table shapes against representative Fresh reports. Source attribution, uptime meaning, and external-buff identification still depend on the actual WCL payload.
+2. Add missed dangerous casts and interrupt opportunities; successful interrupts alone do not show whether kick coverage was complete.
+3. Identify external raid buffs reliably from provider/target fields, then compare coverage with the classes present and fight timing. Do not infer a missing buff from a low generic uptime average.
+4. Build per-player and raid evidence summaries across pulls and progression attempts; distinguish role, class, assignment, fight length, and kill/wipe context.
+5. Add class/spec/game-version-aware suggestions backed by explicit evidence or maintained rules. Keep recommendations explainable and label uncertainty; avoid unsupported benchmark claims.
+6. Validate gear, gems, enchants, and consumables against real response samples; current enrichment shows reported item level/enchant/gem fields and detects likely consumable casts by name.
+7. Finish paging death and interrupt event streams, and handle archive/access failures and API rate limits deliberately. Friendly damage follows event pagination with a bounded six-page cap. Cache expensive report analysis using the existing cache.
+8. Add mocked backend coverage for analysis response shapes, invalid fight IDs, caching, and WCL failures. Build the frontend in an environment with npm dependencies installed.
 
 ## Development and validation
 
