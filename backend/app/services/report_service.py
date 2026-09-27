@@ -89,6 +89,16 @@ query HelloThereLogsFriendlyDamagePage($code: String!, $fightId: Int!, $sourceId
 }
 """
 
+DEATH_DAMAGE_QUERY = """
+query HelloThereLogsDeathDamage($code: String!, $fightId: Int!, $targetId: Int!, $startTime: Float!, $endTime: Float!) {
+  reportData {
+    report(code: $code) {
+      deathDamage: events(dataType: DamageTaken, fightIDs: [$fightId], targetID: $targetId, startTime: $startTime, endTime: $endTime, limit: 10000, useActorIDs: true, useAbilityIDs: true) { data nextPageTimestamp }
+    }
+  }
+}
+"""
+
 
 class ReportService:
     def __init__(self, client: WCLClient, cache: SQLiteCache):
@@ -130,7 +140,7 @@ class ReportService:
         fight = next((item for item in report["fights"] if item["fight_id"] == fight_id), None)
         if fight is None:
             raise ReportNotFoundError("Fight was not found in this report.")
-        cache_key = f"analysis:v3:{code}:{fight_id}"
+        cache_key = f"analysis:v4:{code}:{fight_id}"
         cached = self.cache.get(cache_key)
         if cached is not None:
             return cached
@@ -175,6 +185,9 @@ class ReportService:
         friendly_damage, friendly_damage_abilities, friendly_damage_complete = _friendly_damage_by_player(
             source_event_data, participant_ids
         )
+        death_damage = await self._death_damage_events(
+            code, fight_id, fight["start_time_ms"], raw_report.get("deaths"), participant_ids
+        )
         result = {
             "fight": fight,
             "tables": {
@@ -192,6 +205,7 @@ class ReportService:
             },
             "events": {
                 "deaths": raw_report.get("deaths"),
+                "death_damage": death_damage,
                 "interrupts": raw_report.get("interruptEvents"),
                 "combatant_info": raw_report.get("combatantInfo"),
             },
@@ -200,6 +214,56 @@ class ReportService:
         }
         self.cache.set(cache_key, result)
         return result
+
+    async def _death_damage_events(
+        self, code: str, fight_id: int, fight_start: float, death_page: Any, participant_ids: set[int]
+    ) -> list[dict[str, Any]]:
+        if not isinstance(death_page, dict) or not isinstance(death_page.get("data"), list):
+            return []
+        recaps = []
+        for death in death_page["data"]:
+            if not isinstance(death, dict):
+                continue
+            target_id = death.get("targetID", death.get("targetId"))
+            timestamp = death.get("timestamp")
+            if target_id not in participant_ids or isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)):
+                continue
+            start_time = max(fight_start, timestamp - 8000)
+            response = await self.client.query(DEATH_DAMAGE_QUERY, {
+                "code": code,
+                "fightId": fight_id,
+                "targetId": target_id,
+                "startTime": start_time,
+                "endTime": timestamp,
+            })
+            report = self._report_from_response(response)
+            page = report.get("deathDamage")
+            events = page.get("data", []) if isinstance(page, dict) and isinstance(page.get("data"), list) else []
+            page_count = 1
+            while isinstance(page, dict) and page.get("nextPageTimestamp") is not None and page_count < 3:
+                cursor = page["nextPageTimestamp"]
+                next_response = await self.client.query(DEATH_DAMAGE_QUERY, {
+                    "code": code,
+                    "fightId": fight_id,
+                    "targetId": target_id,
+                    "startTime": cursor,
+                    "endTime": timestamp,
+                })
+                next_report = self._report_from_response(next_response)
+                next_page = next_report.get("deathDamage")
+                if not isinstance(next_page, dict) or not isinstance(next_page.get("data"), list):
+                    break
+                events.extend(next_page["data"])
+                page = next_page
+                page_count += 1
+            recaps.append({
+                "target_id": target_id,
+                "death_timestamp": timestamp,
+                "window_start": start_time,
+                "data": events,
+                "complete": not (isinstance(page, dict) and page.get("nextPageTimestamp") is not None),
+            })
+        return recaps
 
 
 def _friendly_damage_by_player(

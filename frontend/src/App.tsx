@@ -476,10 +476,16 @@ function TimelineCard({ deaths, interrupts, analysis }: { deaths: Array<Record<s
         const ability = isRecord(row.killingAbility) ? row.killingAbility.name : isRecord(row.ability) ? row.ability.name : row.abilityName
         const source = actorName(row, kind === 'death' ? 'source' : 'target')
         const actor = actorName(row, kind === 'death' ? 'target' : 'source')
-        return <div className="moment-row" key={`${kind}-row-${index}`}><time>{formatDuration(relative)}</time><span className={`moment-tag ${kind}`}>{kind === 'death' ? 'DEATH' : 'KICK'}</span><strong>{actor}</strong><span>{typeof ability === 'string' ? ability : kind === 'death' ? 'Final recorded event' : 'Interrupt landed'}</span>{kind === 'death' && source !== 'Unknown' && <small>Source: {source}</small>}</div>
+        const targetId = actorId(row, 'target')
+        const recaps = Array.isArray(analysis.events.death_damage) ? analysis.events.death_damage.filter(isRecord) : []
+        const recap = kind === 'death' ? recaps.find((item) => Number(item.target_id) === targetId && Number(item.death_timestamp) === Number(row.timestamp)) : undefined
+        const incoming = recap && Array.isArray(recap.data) ? recap.data.filter(isRecord).sort((a, b) => Number(a.timestamp ?? 0) - Number(b.timestamp ?? 0)).slice(-5) : []
+        return <div className="moment-entry" key={`${kind}-row-${index}`}><div className="moment-row"><time>{formatDuration(relative)}</time><span className={`moment-tag ${kind}`}>{kind === 'death' ? 'DEATH' : 'KICK'}</span><strong>{actor}</strong><span>{typeof ability === 'string' ? ability : kind === 'death' ? 'Final recorded event' : 'Interrupt landed'}</span>{kind === 'death' && source !== 'Unknown' && <small>Source: {source}</small>}</div>
+          {kind === 'death' && recap && <details className="death-recap"><summary>{incoming.length ? `Previous damage · ${incoming.length} hit${incoming.length === 1 ? '' : 's'}` : 'No damage events in the recap window'}</summary>{incoming.length > 0 && <ul>{incoming.map((hit, hitIndex) => <li key={`${String(hit.timestamp ?? hitIndex)}-${hitIndex}`}><time>{Number.isFinite(Number(hit.timestamp)) ? formatDuration(Math.max(0, Number(hit.timestamp) - fight.start_time_ms)) : '—'}</time><span>{isRecord(hit.ability) ? String(hit.ability.name ?? 'Unknown ability') : String(hit.abilityName ?? 'Unknown ability')}</span><strong>{actorName(hit, 'source')}</strong><b>{typeof hit.amount === 'number' ? formatMetric(hit.amount) : '—'}</b></li>)}</ul>}{recap.complete === false && <small>Damage event pages are incomplete.</small>}<p>Incoming hits before the death; review with encounter mechanics and assigned responsibility.</p></details>}
+        </div>
       })}</div>
     </>}
-    <p className="data-note">Death markers show the recorded death moment and available killing ability. A full pre-death damage recap needs incoming damage events and encounter mechanics.</p>
+    <p className="data-note">Death recaps show up to five incoming hits from the preceding eight seconds when available. Review them with healing, defensive use, assignments, and encounter mechanics.</p>
   </article>
 }
 

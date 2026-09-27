@@ -18,6 +18,7 @@ hellotherelogs is a self-hosted Warcraft Logs Fresh raid analysis app, currently
 - The top bar includes a persistent light/dark selector and a persistent text-size control. Font sizes use `rem` so the control scales the interface consistently.
 - Suggestions and summaries are evidence-led review prompts, not grades or class/spec rotation prescriptions.
 - The encounter review is organized around overall raid performance: survival, critical moments, roster composition, buff coverage, and then output context. Damage taken is presented as a signal to investigate, not automatically labeled avoidable; that judgment needs encounter mechanics and assignment context.
+- Death events now include a focused incoming-damage query for the eight seconds before each player death. The page shows the final recorded hits when available and labels them for review; a full recap still needs encounter mechanics, healing/defensive events, and assignment context.
 - Backend diagnostics log report failures and WCL OAuth/GraphQL failures. Keep secrets and bearer tokens out of logs.
 
 ## Important implementation details
@@ -35,14 +36,15 @@ hellotherelogs is a self-hosted Warcraft Logs Fresh raid analysis app, currently
 The current review is a first functional data layer, not the finished guild coach. In particular:
 
 1. Validate analysis table shapes against representative Fresh reports. The current page makes roster mix, reported buff coverage, and death/interrupt moments easier to scan; source attribution and uptime meaning still depend on the actual WCL payload.
-2. Add incoming damage events around each death so the timeline can show a short pre-death recap. Keep “avoidable” classification out until encounter-specific mechanics and player assignments can support it.
+2. Add relevant healing and defensive cooldown events to death recaps, then validate time ordering and event completeness on representative reports.
 3. Add missed dangerous casts and interrupt opportunities; successful interrupts alone do not show whether kick coverage was complete.
 4. Identify external raid buffs reliably from provider/target fields, then compare coverage with the classes present and fight timing. Do not infer a missing buff from a low generic uptime average.
-5. Build per-player and raid evidence summaries across pulls and progression attempts; distinguish role, class, assignment, fight length, and kill/wipe context.
-6. Add class/spec/game-version-aware suggestions backed by explicit evidence or maintained rules. Keep recommendations explainable and label uncertainty; avoid unsupported benchmark claims.
-7. Validate gear, gems, enchants, and consumables against real response samples; current enrichment shows reported item level/enchant/gem fields and detects likely consumable casts by name.
-8. Finish paging death and interrupt event streams, and handle archive/access failures and API rate limits deliberately. Friendly damage follows event pagination with a bounded six-page cap. Cache expensive report analysis using the existing cache.
-9. Add mocked backend coverage for analysis response shapes, invalid fight IDs, caching, and WCL failures. Build the frontend in an environment with npm dependencies installed.
+5. Add an encounter/version-aware cooldown view. Do not assume every cast is a cooldown or infer missed use without a maintained ability list and encounter timing.
+6. Build per-player and raid evidence summaries across pulls and progression attempts; distinguish role, class, assignment, fight length, and kill/wipe context.
+7. Add class/spec/game-version-aware suggestions backed by explicit evidence or maintained rules. Keep recommendations explainable and label uncertainty; avoid unsupported benchmark claims.
+8. Validate gear, gems, enchants, and consumables against real response samples; current enrichment shows reported item level/enchant/gem fields and detects likely consumable casts by name.
+9. Finish paging death and interrupt event streams, and handle archive/access failures and API rate limits deliberately. Friendly damage follows event pagination with a bounded six-page cap. Death recaps query bounded per-player windows with a three-page cap and expose incomplete data. Cache expensive report analysis using the existing cache.
+10. Add mocked backend coverage for analysis response shapes, invalid fight IDs, caching, and WCL failures. Build the frontend in an environment with npm dependencies installed.
 
 ## Development and validation
 
