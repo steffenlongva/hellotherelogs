@@ -9,7 +9,9 @@ hellotherelogs is a self-hosted Warcraft Logs Fresh raid analysis app, currently
 ## Current state
 
 - The React/TypeScript frontend lives in `frontend/`; the FastAPI backend lives in `backend/`.
-- Docker Compose serves the frontend through nginx on host port 8080 by default. Nginx proxies `/api` to FastAPI inside Compose. Compose explicitly binds the frontend host port to `0.0.0.0` by default, which is useful for Windows access to Docker running in WSL 2.
+- Docker Compose serves the frontend through nginx on host port 8080 by default. Nginx proxies `/api` to FastAPI inside Compose. The root Compose file builds locally for development; `docker-compose.unraid.yml` pulls the published amd64 images from GHCR for server deployment.
+- `.github/workflows/publish-images.yml` builds backend and frontend images on pull requests and publishes them on pushes to `main` and version tags. Main builds publish `latest` and commit SHA tags. GHCR packages under the personal account default to private; an admin must explicitly make both packages public for anonymous Unraid pulls, or configure registry login on Unraid for private pulls.
+- Unraid uses `.env.unraid.example` as a template for backend WCL credentials and deployment settings. Compose stores SQLite in the persistent `hellotherelogs_data` volume. It needs the compose/env files but does not build the source checkout.
 - Warcraft Logs V2 OAuth client credentials are loaded only in the backend. The user confirmed that valid V2 credentials fixed token acquisition and public Fresh reports now load. Do not ask the user to paste credentials and never inspect or commit `.env` contents.
 - The report page shows report metadata, boss progression, attempts, and trash fights.
 - A selected-pull review endpoint uses the selected fight's `friendlyPlayers` roster, WCL tables for damage, healing, damage taken, friendly fire, casts, interrupts, and buffs, plus death/interrupt/combatant events and player details where available. Results are cached using the existing SQLite cache and TTL.
@@ -50,9 +52,9 @@ The current review is a first functional data layer, not the finished guild coac
 - For `feat/clean-player-comparison`, `.venv/bin/python -m pytest` passed all 17 backend tests and `docker compose build` passed, including the frontend `tsc -b` and Vite production build. No live Compose/WCL report validation has been run. `git diff --check` passes.
 - Keep API calls server-side and use mocked Warcraft Logs responses in tests. Never make tests depend on private reports or real credentials.
 
-## WSL access notes
+## Local WSL development notes
 
-The user runs Docker from Ubuntu in WSL 2 and accesses it from a Windows 11 host. Docker output confirmed `0.0.0.0:8080->80/tcp`; `curl http://127.0.0.1:8080/api/health` succeeded in WSL; Windows `Test-NetConnection` to the current WSL IP on port 8080 succeeded. Backend port 8000 is intentionally not published to Windows. The WSL IP can change after restart; use `hostname -I` to retrieve it. The user reached the frontend successfully.
+The user currently develops from Ubuntu in WSL 2 and has accessed the app from a Windows 11 host. This is a development setup only; the intended long-term deployment is on a separate Unraid server using GHCR images. Backend port 8000 remains internal to Compose.
 
 ## Publishing preference
 

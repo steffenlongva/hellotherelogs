@@ -2,12 +2,43 @@
 
 hellotherelogs is a self-hosted Warcraft Logs Classic Fresh report reader. It loads public report data through the Fresh Warcraft Logs GraphQL API; Warcraft Logs credentials remain in FastAPI and are never sent to the browser.
 
-## Start with Docker Compose
+## Deploy on Unraid
+
+Unraid can run the prebuilt app images from GitHub Container Registry (GHCR); it does not need WSL or a local build toolchain. The repository workflow builds and publishes separate `linux/amd64` backend and frontend images to:
+
+- `ghcr.io/steffenlongva/hellotherelogs-backend`
+- `ghcr.io/steffenlongva/hellotherelogs-frontend`
+
+Pushes to `main` publish the `latest` tag and a commit-specific `sha-...` tag. Version tags such as `v1.2.0` publish matching image tags. Pull requests build both images without publishing them.
+
+1. After the first workflow run, open each image package under the GitHub account's **Packages** tab. In **Package settings**, change visibility to **Public** if you want Unraid to pull without registry credentials. GHCR personal packages are private by default. Making a package public is a permanent visibility change on GitHub. If you prefer private packages, keep them private and sign in to GHCR on Unraid with a GitHub personal access token (classic) that has `read:packages` permission.
+2. Copy or clone this repository on Unraid, for example under `/mnt/user/appdata/hellotherelogs`. The source is only needed for the Compose and environment files; Compose pulls the published images and does not build them.
+3. Copy `.env.unraid.example` to `.env` in that directory and enter `WCL_CLIENT_ID` and `WCL_CLIENT_SECRET` from your Warcraft Logs V2 API client. Keep this file private; credentials are passed only to the backend container.
+4. From the directory containing the files, run:
+
+   ```sh
+   docker compose -f docker-compose.unraid.yml pull
+   docker compose -f docker-compose.unraid.yml up -d
+   ```
+
+5. Open `http://UNRAID_ADDRESS:8080`. Set `HELLOTHERELOGS_PORT` in `.env` to use a different host port. SQLite data is stored in the named `hellotherelogs_data` volume and remains across container updates.
+
+To update to the latest main build, run the same `pull` and `up -d` commands again. For a reproducible deployment, set both image variables in `.env` to the same `sha-...` tag or release tag instead of `latest`. Back up the `hellotherelogs_data` volume along with your other app data.
+
+For a private GHCR package, log in once on Unraid before pulling:
+
+```sh
+docker login ghcr.io --username YOUR_GITHUB_USERNAME
+```
+
+Enter a personal access token (classic) with `read:packages` when prompted. Docker stores the login on the Unraid host; do not put this token in the Compose file or repository.
+
+## Run locally with Docker Compose
 
 1. Create a Warcraft Logs **V2 API client** in the Warcraft Logs account client management page.
 2. Copy `.env.example` to `.env`, then set `WCL_CLIENT_ID` and `WCL_CLIENT_SECRET`.
 3. Run `docker compose up --build -d` from this directory.
-4. Open `http://localhost:8080` on the Windows host when Docker is running in WSL 2. The port is published on all WSL interfaces by default. If localhost forwarding is unavailable, get the WSL address with `hostname -I` inside Ubuntu and open `http://WSL_ADDRESS:8080` from Windows. Set `HELLOTHERELOGS_PORT` to change the host port or `HELLOTHERELOGS_BIND_ADDRESS` to change the bind address.
+4. Open `http://localhost:8080` on the local machine. If running Docker inside WSL 2, localhost forwarding is usually available; otherwise get the WSL address with `hostname -I` inside Ubuntu and open `http://WSL_ADDRESS:8080` from Windows. Set `HELLOTHERELOGS_PORT` to change the host port or `HELLOTHERELOGS_BIND_ADDRESS` to change the bind address.
 5. Visit `/api/health` to check the API. Compose persists SQLite data in the `hellotherelogs_data` volume.
 
 ## Local development
@@ -42,6 +73,8 @@ Paste a Fresh URL such as `https://fresh.warcraftlogs.com/reports/REPORTCODE`, c
 | `FRONTEND_ORIGIN` | CORS origin for direct API access |
 | `HELLOTHERELOGS_PORT` | Optional nginx host port (default `8080`) |
 | `HELLOTHERELOGS_BIND_ADDRESS` | Host interface Docker publishes on (default `0.0.0.0`, all interfaces) |
+
+Unraid deployment uses `.env.unraid.example` and `docker-compose.unraid.yml`. `HELLOTHERELOGS_BACKEND_IMAGE` and `HELLOTHERELOGS_FRONTEND_IMAGE` can override the default GHCR `latest` tags to pin a release or commit image.
 
 ## Contributing
 

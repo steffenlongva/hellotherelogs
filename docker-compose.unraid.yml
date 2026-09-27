@@ -1,0 +1,29 @@
+services:
+  backend:
+    image: ${HELLOTHERELOGS_BACKEND_IMAGE:-ghcr.io/steffenlongva/hellotherelogs-backend:latest}
+    container_name: hellotherelogs-backend
+    environment:
+      DATABASE_URL: sqlite:////data/hellotherelogs.sqlite3
+      CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-900}
+      WCL_CLIENT_ID: ${WCL_CLIENT_ID:-}
+      WCL_CLIENT_SECRET: ${WCL_CLIENT_SECRET:-}
+      WCL_TOKEN_URL: ${WCL_TOKEN_URL:-https://www.warcraftlogs.com/oauth/token}
+      WCL_GRAPHQL_URL: ${WCL_GRAPHQL_URL:-https://fresh.warcraftlogs.com/api/v2/client}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:8080}
+    volumes:
+      - hellotherelogs_data:/data
+    expose:
+      - "8000"
+    restart: unless-stopped
+
+  frontend:
+    image: ${HELLOTHERELOGS_FRONTEND_IMAGE:-ghcr.io/steffenlongva/hellotherelogs-frontend:latest}
+    container_name: hellotherelogs-frontend
+    ports:
+      - "${HELLOTHERELOGS_PORT:-8080}:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  hellotherelogs_data:
