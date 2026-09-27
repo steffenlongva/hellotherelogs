@@ -528,6 +528,13 @@ class ReportService:
         roster_size = len(fight.get("friendly_players") or [])
         if fight["encounter_id"] <= 0 or not isinstance(difficulty, int) or roster_size <= 0:
             return _unavailable_benchmarks(fight, strictness, "This pull is missing encounter, difficulty, or roster-size data.", cohort_source)
+        if fight.get("kill") is not True:
+            return _unavailable_benchmarks(
+                fight,
+                strictness,
+                "Public comparison cohorts contain completed kills. Wipe attempts need progression and phase-aware comparisons, so kill benchmarks are not shown for this pull.",
+                cohort_source,
+            )
 
         cache_key = f"benchmarks:v3:{code}:{fight_id}:{strictness}:{cohort_source}"
         cached = self.cache.get(cache_key)
@@ -596,52 +603,63 @@ class ReportService:
                 if difference > duration_tolerance:
                     continue
             candidate_rows.append(candidate)
-            if len(candidate_rows) >= 5:
+            # WCL ranking order is useful, but its first few reports may not
+            # match the selected pull's composition or item level. Inspect a
+            # bounded pool so those filters do not leave a cohort needlessly
+            # empty when comparable reports are available farther down.
+            if len(candidate_rows) >= 25:
                 break
 
-        loaded = await asyncio.gather(*(
-            self._get_benchmark_report(candidate, fight["encounter_id"], difficulty, roster_size)
-            for candidate in candidate_rows
-        ), return_exceptions=True)
         candidates = []
         reference_analyses = []
-        failed_reports = sum(isinstance(reference, Exception) for reference in loaded)
-        for candidate, reference in zip(candidate_rows, loaded):
-            if isinstance(reference, Exception):
-                continue
-            if reference is None:
-                continue
-            reference_fight = reference["fight"]
-            candidate_duration = reference_fight["duration_ms"] / 1000
-            candidate["duration_seconds"] = candidate_duration
-            if duration_tolerance is not None:
-                duration_difference = abs(candidate_duration - duration_seconds) / max(1, duration_seconds)
-                if duration_difference > duration_tolerance:
+        failed_reports = 0
+        for batch_start in range(0, len(candidate_rows), 5):
+            batch = candidate_rows[batch_start:batch_start + 5]
+            loaded = await asyncio.gather(*(
+                self._get_benchmark_report(candidate, fight["encounter_id"], difficulty, roster_size)
+                for candidate in batch
+            ), return_exceptions=True)
+            for candidate, reference in zip(batch, loaded):
+                if isinstance(reference, Exception):
+                    failed_reports += 1
                     continue
-            candidate_classes = _class_counts(reference["actors"])
-            if composition_floor is not None and target_classes and sum(candidate_classes.values()) != roster_size:
-                continue
-            if composition_floor is not None and target_classes and candidate_classes:
-                overlap = sum(min(count, candidate_classes.get(name, 0)) for name, count in target_classes.items())
-                similarity = overlap / max(1, sum(target_classes.values()), sum(candidate_classes.values()))
-                if similarity < composition_floor:
+                if reference is None:
                     continue
-                candidate["composition_similarity"] = round(similarity, 3)
-            candidate_ilvl = reference_fight.get("average_item_level") or _average_item_level(reference.get("player_details"))
-            if item_level_tolerance is not None and target_ilvl is not None and candidate_ilvl is None:
-                continue
-            if candidate_ilvl is not None:
-                candidate["average_item_level"] = round(candidate_ilvl, 1)
-                if target_ilvl is not None:
-                    item_level_difference = candidate_ilvl - target_ilvl
-                    if item_level_tolerance is not None and abs(item_level_difference) > item_level_tolerance:
+                reference_fight = reference["fight"]
+                candidate_duration = reference_fight["duration_ms"] / 1000
+                candidate["duration_seconds"] = candidate_duration
+                if duration_tolerance is not None:
+                    duration_difference = abs(candidate_duration - duration_seconds) / max(1, duration_seconds)
+                    if duration_difference > duration_tolerance:
                         continue
-                    candidate["item_level_difference"] = round(item_level_difference, 1)
-            actor_specs = _actor_specs(reference.get("player_details"))
-            reference["player_specs"] = {str(actor_id): spec for actor_id, spec in actor_specs.items() if actor_id in {actor["id"] for actor in reference["actors"]}}
-            reference.pop("player_details", None)
-            reference_analyses.append(reference)
-            candidates.append(candidate)
+                candidate_classes = _class_counts(reference["actors"])
+                if composition_floor is not None and target_classes and sum(candidate_classes.values()) != roster_size:
+                    continue
+                if composition_floor is not None and target_classes and candidate_classes:
+                    overlap = sum(min(count, candidate_classes.get(name, 0)) for name, count in target_classes.items())
+                    similarity = overlap / max(1, sum(target_classes.values()), sum(candidate_classes.values()))
+                    if similarity < composition_floor:
+                        continue
+                    candidate["composition_similarity"] = round(similarity, 3)
+                candidate_ilvl = reference_fight.get("average_item_level") or _average_item_level(reference.get("player_details"))
+                if item_level_tolerance is not None and target_ilvl is not None and candidate_ilvl is None:
+                    continue
+                if candidate_ilvl is not None:
+                    candidate["average_item_level"] = round(candidate_ilvl, 1)
+                    if target_ilvl is not None:
+                        item_level_difference = candidate_ilvl - target_ilvl
+                        if item_level_tolerance is not None and abs(item_level_difference) > item_level_tolerance:
+                            continue
+                        candidate["item_level_difference"] = round(item_level_difference, 1)
+                actor_specs = _actor_specs(reference.get("player_details"))
+                reference["player_specs"] = {str(actor_id): spec for actor_id, spec in actor_specs.items() if actor_id in {actor["id"] for actor in reference["actors"]}}
+                reference.pop("player_details", None)
+                reference_analyses.append(reference)
+                candidates.append(candidate)
+                if len(candidates) >= 5:
+                    break
+            if len(candidates) >= 5:
+                break
         limitations = [
             "Reference reports are drawn from WCL's execution-ranked kills, so this cohort is aspirational and not a typical-performance baseline."
             if cohort_source == "execution"
@@ -650,7 +668,7 @@ class ReportService:
             "This is a reference cohort, not a player grade; assignments and encounter context still matter.",
         ]
         if failed_reports:
-            limitations.append(f"{failed_reports} leaderboard report(s) could not be loaded for detailed comparison.")
+            limitations.append(f"{failed_reports} candidate report(s) could not be loaded for detailed comparison.")
         result = {
             "status": "available" if candidates else "unavailable" if failed_reports else "empty",
             "encounter": encounter_name,

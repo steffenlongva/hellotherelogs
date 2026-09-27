@@ -190,3 +190,48 @@ def test_recent_peer_benchmarks_use_roster_rankings() -> None:
     assert result["source"] == "Warcraft Logs recent two-week spec parses"
     assert result["sample_size"] == 1
     assert result["candidates"][0]["matched_specs"] == ["Fury", "Holy"]
+
+
+def test_benchmark_searches_past_first_five_nonmatching_reports() -> None:
+    class LateMatchClient(BenchmarkClient):
+        def __init__(self):
+            super().__init__()
+            for index in range(5):
+                fight_id = 30 + index
+                self.peer_reports[(f"PeerBad{index}", fight_id)] = _peer_report(fight_id, "Mage", "Druid", 82)
+
+        async def query(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+            if query == ENCOUNTER_RANKINGS_QUERY:
+                rankings = [
+                    {"report": {"code": f"PeerBad{index}", "fightID": 30 + index}, "duration": 60}
+                    for index in range(5)
+                ]
+                rankings.append({"report": {"code": "PeerA123", "fightID": 10}, "duration": 60, "rankPercent": 92})
+                return {"worldData": {"encounter": {"name": "Test Boss", "fightRankings": json.dumps({"rankings": rankings})}}}
+            return await super().query(query, variables)
+
+    service = ReportService(LateMatchClient(), MemoryCache())  # type: ignore[arg-type]
+
+    result = asyncio.run(service.get_benchmarks("Guild123", 1, "strict", "execution"))
+
+    assert result["sample_size"] == 1
+    assert result["candidates"][0]["report_code"] == "PeerA123"
+
+
+def test_benchmark_does_not_compare_wipes_with_completed_kills() -> None:
+    class WipeClient(BenchmarkClient):
+        async def query(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+            if query == REPORT_QUERY:
+                report = _selected_report()
+                report["fights"][0]["kill"] = False
+                return {"reportData": {"report": report}}
+            if query == ENCOUNTER_RANKINGS_QUERY:
+                raise AssertionError("A wipe should not query kill rankings")
+            return await super().query(query, variables)
+
+    service = ReportService(WipeClient(), MemoryCache())  # type: ignore[arg-type]
+
+    result = asyncio.run(service.get_benchmarks("Guild123", 1, "balanced", "execution"))
+
+    assert result["status"] == "unavailable"
+    assert "completed kills" in result["limitations"][0]
