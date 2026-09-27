@@ -1,7 +1,7 @@
 import { FormEvent, ReactNode, useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import './analysis.css'
-import { Activity, ArrowLeft, ArrowUpRight, Check, CircleHelp, Clock3, Command, ExternalLink, LoaderCircle, Moon, Shield, Skull, Sun, Swords, Trophy } from 'lucide-react'
+import { Activity, ArrowLeft, ArrowUpRight, Check, CircleHelp, Clock3, Command, ExternalLink, LoaderCircle, Shield, Skull, Swords, Trophy } from 'lucide-react'
 
 type Health = { status: string; service: string }
 type Fight = {
@@ -240,26 +240,31 @@ function formatDate(date: string): string {
 }
 
 function AppearanceControls() {
-  const [theme, setTheme] = useState(() => localStorage.getItem('htl-theme') === 'light' ? 'light' : 'dark')
+  const [theme, setTheme] = useState(() => {
+    const saved = localStorage.getItem('htl-theme')
+    return ['dark', 'light', 'catppuccin-mocha', 'tokyo-night', 'nord'].includes(saved ?? '') ? saved as string : 'dark'
+  })
   const [fontScale, setFontScale] = useState(() => {
-    const stored = Number(localStorage.getItem('htl-font-scale'))
-    return Number.isFinite(stored) && stored >= 0.9 && stored <= 1.3 ? stored : 1
+    const stored = Number(localStorage.getItem('htl-font-scale-v2'))
+    return Number.isFinite(stored) && stored >= 0.9 && stored <= 1.3 ? stored : 1.1
   })
   useEffect(() => {
     document.body.dataset.theme = theme
     document.documentElement.style.setProperty('--font-scale', String(fontScale))
     localStorage.setItem('htl-theme', theme)
-    localStorage.setItem('htl-font-scale', String(fontScale))
+    localStorage.setItem('htl-font-scale-v2', String(fontScale))
   }, [theme, fontScale])
   return <div className="appearance-controls" aria-label="Display settings">
     <label className="font-scale-control" title="Adjust interface text size"><span>A</span><input aria-label="Text size" type="range" min="0.9" max="1.3" step="0.05" value={fontScale} onChange={(event) => setFontScale(Number(event.target.value))} /><span className="large-a">A</span></label>
-    <button className="theme-toggle" type="button" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}>{theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}<span>{theme === 'dark' ? 'LIGHT' : 'DARK'}</span></button>
+    <label className="theme-picker"><span className="sr-only">Color theme</span><select className="theme-toggle" aria-label="Color theme" value={theme} onChange={(event) => setTheme(event.target.value)}><option value="dark">Dark</option><option value="light">Light</option><option value="catppuccin-mocha">Catppuccin Mocha</option><option value="tokyo-night">Tokyo Night</option><option value="nord">Nord</option></select></label>
   </div>
 }
 
 function Header({ connected }: { connected?: boolean }) {
+  const buildDate = import.meta.env.VITE_APP_BUILD_DATE || 'local build'
+  const buildDateLabel = buildDate.length >= 16 ? `${buildDate.slice(0, 10)} ${buildDate.slice(11, 16)} UTC` : buildDate
   return <header className="topbar">
-    <a className="brand" href="/"><span className="brand-mark"><Command size={17} /></span><span>hellotherelogs</span><span className="version">LOCAL / 0.2</span></a>
+    <a className="brand" href="/"><span className="brand-mark"><Command size={17} /></span><span>hellotherelogs</span><span className="version" title={`Built ${buildDate}`}>BUILD / {(import.meta.env.VITE_APP_VERSION || 'local').slice(0, 7)} · {buildDateLabel}</span></a>
     <div className="topbar-tools"><AppearanceControls />
     {connected !== undefined && <div className="system-status"><span className={`status-dot ${connected ? 'online' : ''}`} /> API {connected ? 'CONNECTED' : 'OFFLINE'}</div>}
     </div>
@@ -369,6 +374,7 @@ function ReportPage({ code }: { code: string }) {
             <article className="overview-card composition-card"><span className="overview-icon tint-mint"><Swords size={17} /></span><div><strong>{playerStats.length}</strong><span>Raid roster</span></div><div className="comp-bars">{composition.map(([name, count]) => <span key={name} title={`${name}: ${count}`}><i style={{ width: `${100 * count / Math.max(1, playerStats.length)}%` }} />{name}<b>{count}</b></span>)}</div></article>
           </section>
           <TimelineCard deaths={deathEvents} interrupts={interruptEvents} analysis={analysis.data} />
+          <LearningPlan players={playerStats} deaths={deathEvents} interrupts={interruptEvents} deathsAvailable={eventDataAvailable(analysis.data.events.deaths)} interruptsAvailable={eventDataAvailable(analysis.data.events.interrupts)} />
           <div className="leader-grid">
             <LeaderCard title="Damage" players={metricLeaders('damage')} metric="damage" tint="blue" />
             <LeaderCard title="Healing" players={metricLeaders('healing')} metric="healing" tint="mint" />
@@ -395,6 +401,25 @@ function ReportPage({ code }: { code: string }) {
 }
 
 function formatMetric(value: number | null): string { return value === null ? '—' : Math.round(value).toLocaleString() }
+
+function LearningPlan({ players, deaths, interrupts, deathsAvailable, interruptsAvailable }: { players: PlayerStats[]; deaths: Array<Record<string, unknown>>; interrupts: Array<Record<string, unknown>>; deathsAvailable: boolean; interruptsAvailable: boolean }) {
+  const deathTimes = deaths.map((row) => Number(row.timestamp)).filter(Number.isFinite).sort((a, b) => a - b)
+  const clusteredDeaths = deathTimes.some((time, index) => deathTimes.slice(index + 1).some((later) => later - time <= 10_000))
+  const classCounts = new Map<string, number>()
+  players.forEach((player) => classCounts.set(player.subType || 'Unknown', (classCounts.get(player.subType || 'Unknown') ?? 0) + 1))
+  const classSummary = [...classCounts.entries()].map(([name, count]) => `${count} ${name}`).join(' · ')
+  const observedBuffs = [...new Set(players.flatMap((player) => player.uptimes.map((uptime) => uptime.name)))].slice(0, 4)
+  return <section className="learning-plan" aria-labelledby="learning-plan-title">
+    <div className="learning-heading"><div><span className="eyebrow">TURN THE LOG INTO PRACTICE</span><h3 id="learning-plan-title">What to learn for the next pull</h3><p>Choose one team habit to review, agree on a response, then check the next attempt for the same moment.</p></div><span className="learning-count">4 REVIEW TOPICS</span></div>
+    <div className="learning-grid">
+      <article className="learning-card"><span className="learning-number">01 / SURVIVAL</span><h4>{deathsAvailable ? `${deaths.length} deaths to review` : 'Death data unavailable'}</h4><p>{deathsAvailable && deaths.length ? 'Use the timeline and each player recap to find the last damaging mechanic, then check whether movement, positioning, healing, or a personal defensive could change the outcome.' : 'Open the timeline on a wipe or pull with deaths. Trace the mechanic and response before deciding whether damage was avoidable.'}</p><small>{deathsAvailable && deaths.length ? (clusteredDeaths ? 'Several deaths landed within 10 seconds: review raid-wide damage and defensive coverage together.' : 'Ask each player what they saw and which response they will try next time.') : 'Damage taken alone cannot tell expected damage from a mistake.'}</small></article>
+      <article className="learning-card"><span className="learning-number">02 / INTERRUPTS</span><h4>{interruptsAvailable ? `${interrupts.length} kicks recorded` : 'Kick events unavailable'}</h4><p>Use successful kicks to map who covered each cast. Then check the enemy cast timeline in Warcraft Logs for casts that finished, and assign a primary kicker plus a backup.</p><small>{interruptsAvailable ? 'A low kick count is not proof of missed kicks; this view does not yet collect failed interrupt opportunities.' : 'Review cast coverage directly in Warcraft Logs for this pull.'}</small></article>
+      <article className="learning-card"><span className="learning-number">03 / RAID COVERAGE</span><h4>Match buffs and utility to this roster</h4><p>{classSummary ? `This pull had ${classSummary}. Compare the class mix and reported buff rows with the utility your strategy expects.` : 'Compare the raid composition and reported buff rows with the utility your strategy expects.'}</p><small>{observedBuffs.length ? `Reported examples: ${observedBuffs.join(', ')}. Confirm provider, target, and assignment before calling coverage low.` : 'Buff rows are not a complete list of external buffs; confirm coverage and ownership in the log.'}</small></article>
+      <article className="learning-card"><span className="learning-number">04 / COOLDOWNS</span><h4>Plan defensive coverage before danger windows</h4><p>Mark the next high-damage phase on the timeline. Assign raid defensives and personal cooldown reminders around it, then compare casts and deaths on the next pull.</p><small>This report does not yet identify unused cooldowns, so treat this as a planning prompt rather than a finding.</small></article>
+    </div>
+    <div className="learning-loop"><strong>Make it stick</strong><span>Pick one topic · name an owner · agree on a response · compare the same moment next pull</span></div>
+  </section>
+}
 
 function LeaderCard({ title, players, metric, tint }: { title: string; players: PlayerStats[]; metric: 'damage' | 'healing' | 'damageTaken' | 'friendlyDamage'; tint: string }) {
   const max = Math.max(1, ...players.map((player) => player[metric] ?? 0))
