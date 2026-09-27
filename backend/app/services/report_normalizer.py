@@ -32,11 +32,13 @@ def normalize_fight(raw: dict[str, Any]) -> dict[str, Any]:
     return {
         "fight_id": fight_id,
         "encounter_id": encounter_id,
+        "difficulty": raw.get("difficulty") if isinstance(raw.get("difficulty"), int) else None,
         "name": name,
         "start_time_ms": start_time,
         "end_time_ms": end_time,
         "duration_ms": max(0.0, end_time - start_time),
         "kill": raw.get("kill"),
+        "average_item_level": raw.get("averageItemLevel") if isinstance(raw.get("averageItemLevel"), (int, float)) else None,
         "fight_percentage": raw.get("fightPercentage"),
         "friendly_players": raw.get("friendlyPlayers") or [],
     }
@@ -81,6 +83,7 @@ def normalize_report(raw: dict[str, Any]) -> dict[str, Any]:
         "code": code,
         "title": title,
         "zone": zone.get("name") if isinstance(zone, dict) else None,
+        "zone_id": zone.get("id") if isinstance(zone, dict) and isinstance(zone.get("id"), int) else None,
         "guild": guild.get("name") if isinstance(guild, dict) else None,
         "start_time": _iso_utc(start_time),
         "end_time": _iso_utc(end_time),
