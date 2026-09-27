@@ -235,3 +235,35 @@ def test_benchmark_does_not_compare_wipes_with_completed_kills() -> None:
 
     assert result["status"] == "unavailable"
     assert "completed kills" in result["limitations"][0]
+
+
+def test_progression_benchmarks_compare_same_report_wipes() -> None:
+    class ProgressionClient(BenchmarkClient):
+        async def query(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+            if query == REPORT_QUERY:
+                report = _selected_report()
+                report["fights"][0]["kill"] = False
+                report["fights"][0]["fightPercentage"] = 20.0
+                report["fights"].append({**_fight(2, "Warrior", "Priest", 70), "kill": False, "fightPercentage": 18.0})
+                report["fights"].append({**_fight(3, "Warrior", "Priest", 70), "kill": False, "fightPercentage": 40.0})
+                return {"reportData": {"report": report}}
+            if query == BENCHMARK_REPORT_QUERY and variables.get("code") == "Guild123" and variables.get("fightId") in {2, 3}:
+                fight_id = variables["fightId"]
+                reference = _peer_report(fight_id, "Warrior", "Priest", 70)
+                reference["code"] = "Guild123"
+                reference["fights"][0]["kill"] = False
+                reference["fights"][0]["fightPercentage"] = 18.0 if fight_id == 2 else 40.0
+                return {"reportData": {"report": reference}}
+            return await super().query(query, variables)
+
+    service = ReportService(ProgressionClient(), MemoryCache())  # type: ignore[arg-type]
+
+    result = asyncio.run(service.get_benchmarks("Guild123", 1, "strict", "progression"))
+
+    assert result["status"] == "available"
+    assert result["source"] == "Same-report progression attempts"
+    assert result["sample_size"] == 1
+    assert result["candidates"][0]["fight_id"] == 2
+    assert result["candidates"][0]["fight_percentage"] == 18.0
+    assert any("same kill/wipe result" in item for item in result["match_basis"])
+    assert any("wipe progress within ±10" in item for item in result["match_basis"])

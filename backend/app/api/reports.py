@@ -89,7 +89,7 @@ async def get_fight_benchmarks(
     report_code: str = REPORT_CODE_PATH,
     fight_id: int = Path(gt=0),
     strictness: str = Query(default="balanced", pattern="^(strict|balanced|broad)$"),
-    source: str = Query(default="recent", pattern="^(recent|execution)$"),
+    source: str = Query(default="recent", pattern="^(recent|execution|progression)$"),
     service: ReportService = Depends(get_report_service),
 ) -> dict[str, Any]:
     try:

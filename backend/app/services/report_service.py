@@ -89,12 +89,17 @@ class ReportNotFoundError(LookupError):
 
 
 def _unavailable_benchmarks(fight: dict[str, Any], strictness: str, reason: str, cohort_source: str = "execution") -> dict[str, Any]:
+    sources = {
+        "recent": "Warcraft Logs recent two-week spec parses",
+        "execution": "Warcraft Logs execution leaderboard",
+        "progression": "Same-report progression attempts",
+    }
     return {
         "status": "unavailable",
         "encounter": fight.get("name"),
         "strictness": strictness,
         "cohort_source": cohort_source,
-        "source": "Warcraft Logs recent two-week spec parses" if cohort_source == "recent" else "Warcraft Logs execution leaderboard",
+        "source": sources.get(cohort_source, "Warcraft Logs execution leaderboard"),
         "sample_size": 0,
         "match_basis": [],
         "limitations": [reason],
@@ -331,7 +336,7 @@ query HelloThereLogsBenchmarkReport($code: String!, $fightId: Int!) {
     report(code: $code) {
       code
       title
-      fights { id encounterID difficulty name startTime endTime kill averageItemLevel friendlyPlayers }
+      fights { id encounterID difficulty name startTime endTime kill averageItemLevel fightPercentage friendlyPlayers }
       masterData { actors { id name type subType petOwner } }
       damage: table(dataType: DamageDone, fightIDs: [$fightId], viewBy: Source)
       healing: table(dataType: Healing, fightIDs: [$fightId], viewBy: Source)
@@ -466,7 +471,7 @@ class ReportService:
         self.cache.set(cache_key, result)
         return result
 
-    async def _get_benchmark_report(self, candidate: dict[str, Any], target_encounter_id: int, target_difficulty: int, target_size: int) -> dict[str, Any] | None:
+    async def _get_benchmark_report(self, candidate: dict[str, Any], target_encounter_id: int, target_difficulty: int, target_size: int, target_kill: bool = True) -> dict[str, Any] | None:
         data = await self.client.query(BENCHMARK_REPORT_QUERY, {
             "code": candidate["report_code"],
             "fightId": candidate["fight_id"],
@@ -482,7 +487,7 @@ class ReportService:
         if (
             normalized_fight["encounter_id"] != target_encounter_id
             or normalized_fight.get("difficulty") != target_difficulty
-            or normalized_fight.get("kill") is not True
+            or normalized_fight.get("kill") is not target_kill
             or len(normalized_fight.get("friendly_players") or []) != target_size
         ):
             return None
@@ -518,8 +523,8 @@ class ReportService:
         """Return public encounter reports matched by raid size, duration, and available roster data."""
         if strictness not in {"strict", "balanced", "broad"}:
             raise ValueError("Benchmark strictness must be strict, balanced, or broad.")
-        if cohort_source not in {"recent", "execution"}:
-            raise ValueError("Benchmark source must be recent or execution.")
+        if cohort_source not in {"recent", "execution", "progression"}:
+            raise ValueError("Benchmark source must be recent, execution, or progression.")
         report = await self.get_report(code)
         fight = next((item for item in report["fights"] if item["fight_id"] == fight_id), None)
         if fight is None:
@@ -528,7 +533,9 @@ class ReportService:
         roster_size = len(fight.get("friendly_players") or [])
         if fight["encounter_id"] <= 0 or not isinstance(difficulty, int) or roster_size <= 0:
             return _unavailable_benchmarks(fight, strictness, "This pull is missing encounter, difficulty, or roster-size data.", cohort_source)
-        if fight.get("kill") is not True:
+        if cohort_source == "progression" and not isinstance(fight.get("kill"), bool):
+            return _unavailable_benchmarks(fight, strictness, "Warcraft Logs did not report whether this attempt ended in a kill or wipe.", cohort_source)
+        if cohort_source != "progression" and fight.get("kill") is not True:
             return _unavailable_benchmarks(
                 fight,
                 strictness,
@@ -536,12 +543,39 @@ class ReportService:
                 cohort_source,
             )
 
-        cache_key = f"benchmarks:v3:{code}:{fight_id}:{strictness}:{cohort_source}"
+        cache_key = f"benchmarks:v4:{code}:{fight_id}:{strictness}:{cohort_source}"
         cached = self.cache.get(cache_key)
         if cached is not None:
             return cached
         analysis = await self.get_fight_analysis(code, fight_id)
-        if cohort_source == "execution":
+        if cohort_source == "progression":
+            rows = []
+            for attempt in report["fights"]:
+                if (
+                    attempt["fight_id"] == fight_id
+                    or attempt["encounter_id"] != fight["encounter_id"]
+                    or attempt.get("difficulty") != difficulty
+                    or attempt.get("kill") is not fight["kill"]
+                    or len(attempt.get("friendly_players") or []) != roster_size
+                ):
+                    continue
+                rows.append({
+                    "report_code": code,
+                    "fight_id": attempt["fight_id"],
+                    "title": report["title"],
+                    "guild": report.get("guild"),
+                    "duration_seconds": attempt["duration_ms"] / 1000,
+                    "rank_percent": None,
+                    "composition_similarity": None,
+                    "average_item_level": attempt.get("average_item_level"),
+                    "fight_percentage": attempt.get("fight_percentage"),
+                    "item_level_difference": None,
+                    "url": f"https://fresh.warcraftlogs.com/reports/{code}#fight={attempt['fight_id']}",
+                })
+            encounter_name = fight["name"]
+            source_label = "Same-report progression attempts"
+            matched_specs: dict[tuple[str, int], set[str]] = {}
+        elif cohort_source == "execution":
             data = await self.client.query(ENCOUNTER_RANKINGS_QUERY, {
                 "encounterId": fight["encounter_id"],
                 "difficulty": difficulty,
@@ -580,6 +614,7 @@ class ReportService:
             source_label = "Warcraft Logs recent two-week spec parses"
         duration_seconds = fight["duration_ms"] / 1000
         duration_tolerance = {"strict": 0.10, "balanced": 0.20, "broad": None}[strictness]
+        progress_tolerance = {"strict": 10.0, "balanced": 20.0, "broad": None}[strictness] if cohort_source == "progression" and fight["kill"] is False else None
         target_classes = _class_counts(analysis.get("actors", []))
         if sum(target_classes.values()) != roster_size:
             target_classes = {}
@@ -589,6 +624,11 @@ class ReportService:
         candidate_rows = []
         seen_candidates: set[tuple[str, int]] = set()
         for row in rows:
+            if cohort_source == "progression":
+                candidate_rows.append(row)
+                if len(candidate_rows) >= 25:
+                    break
+                continue
             candidate = _ranking_candidate(row)
             if candidate is None:
                 continue
@@ -616,7 +656,7 @@ class ReportService:
         for batch_start in range(0, len(candidate_rows), 5):
             batch = candidate_rows[batch_start:batch_start + 5]
             loaded = await asyncio.gather(*(
-                self._get_benchmark_report(candidate, fight["encounter_id"], difficulty, roster_size)
+                self._get_benchmark_report(candidate, fight["encounter_id"], difficulty, roster_size, fight["kill"] is True)
                 for candidate in batch
             ), return_exceptions=True)
             for candidate, reference in zip(batch, loaded):
@@ -632,6 +672,15 @@ class ReportService:
                     duration_difference = abs(candidate_duration - duration_seconds) / max(1, duration_seconds)
                     if duration_difference > duration_tolerance:
                         continue
+                selected_progress = fight.get("fight_percentage")
+                candidate_progress = reference_fight.get("fight_percentage")
+                if (
+                    progress_tolerance is not None
+                    and isinstance(selected_progress, (int, float))
+                    and isinstance(candidate_progress, (int, float))
+                    and abs(candidate_progress - selected_progress) > progress_tolerance
+                ):
+                    continue
                 candidate_classes = _class_counts(reference["actors"])
                 if composition_floor is not None and target_classes and sum(candidate_classes.values()) != roster_size:
                     continue
@@ -663,7 +712,9 @@ class ReportService:
         limitations = [
             "Reference reports are drawn from WCL's execution-ranked kills, so this cohort is aspirational and not a typical-performance baseline."
             if cohort_source == "execution"
-            else "Recent references are limited to reports surfaced by up to ten roster characters' same-spec WCL rankings; this is not a random or comprehensive raid sample.",
+            else "Recent references are limited to reports surfaced by up to ten roster characters' same-spec WCL rankings; this is not a random or comprehensive raid sample."
+            if cohort_source == "recent"
+            else "Progression references come only from other pulls in this report, so the sample may be small and roster strategy may change between attempts.",
             "Cross-log player comparisons use class when specialization is absent; role and assignment differences can still matter.",
             "This is a reference cohort, not a player grade; assignments and encounter context still matter.",
         ]
@@ -680,8 +731,9 @@ class ReportService:
                 "same encounter",
                 "same difficulty",
                 f"same raid size ({roster_size})",
-                "same-spec recent rankings" if cohort_source == "recent" else "execution leaderboard kills",
+                "same-report attempts with the same kill/wipe result" if cohort_source == "progression" else "same-spec recent rankings" if cohort_source == "recent" else "execution leaderboard kills",
                 f"pull duration within {int(duration_tolerance * 100)}%" if duration_tolerance is not None else "duration not filtered",
+                f"wipe progress within ±{progress_tolerance:.0f} percentage points when reported" if progress_tolerance is not None else "wipe progress not filtered",
                 f"class composition overlap ≥ {int(composition_floor * 100)}%" if composition_floor is not None and target_classes else "class composition not filtered",
                 f"average item level within ±{item_level_tolerance:.0f}" if item_level_tolerance is not None and target_ilvl is not None else "item level not filtered",
             ],
