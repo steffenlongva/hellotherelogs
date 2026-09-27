@@ -88,12 +88,13 @@ class ReportNotFoundError(LookupError):
     pass
 
 
-def _unavailable_benchmarks(fight: dict[str, Any], strictness: str, reason: str) -> dict[str, Any]:
+def _unavailable_benchmarks(fight: dict[str, Any], strictness: str, reason: str, cohort_source: str = "execution") -> dict[str, Any]:
     return {
         "status": "unavailable",
         "encounter": fight.get("name"),
         "strictness": strictness,
-        "source": "Warcraft Logs execution leaderboard",
+        "cohort_source": cohort_source,
+        "source": "Warcraft Logs recent two-week spec parses" if cohort_source == "recent" else "Warcraft Logs execution leaderboard",
         "sample_size": 0,
         "match_basis": [],
         "limitations": [reason],
@@ -169,12 +170,92 @@ def _actor_specs(value: Any) -> dict[int, str]:
     specs: dict[int, str] = {}
     for record in _records(value):
         actor_id = record.get("id", record.get("actorID", record.get("actorId")))
-        spec = record.get("specName", record.get("spec", record.get("specialization")))
-        if isinstance(spec, dict):
-            spec = spec.get("name")
+        spec = _record_spec(record)
         if isinstance(actor_id, int) and isinstance(spec, str) and spec:
             specs.setdefault(actor_id, spec)
     return specs
+
+
+def _record_spec(record: dict[str, Any]) -> str | None:
+    spec = record.get("specName", record.get("spec", record.get("specialization")))
+    if isinstance(spec, dict):
+        spec = spec.get("name")
+    if isinstance(spec, str) and spec:
+        return spec
+    specs = record.get("specs")
+    if isinstance(specs, list):
+        active = [item for item in specs if isinstance(item, dict) and (item.get("active") is True or item.get("isActive") is True or item.get("selected") is True)]
+        candidates = active or [item for item in specs if isinstance(item, dict)]
+        names = {item.get("name", item.get("spec")) for item in candidates}
+        names.discard(None)
+        if len(names) == 1:
+            chosen = next(iter(names))
+            return chosen if isinstance(chosen, str) and chosen else None
+    combatant = record.get("combatantInfo", record.get("combatantinfo"))
+    if isinstance(combatant, dict):
+        spec = combatant.get("specName", combatant.get("spec"))
+        if isinstance(spec, dict):
+            spec = spec.get("name")
+        if isinstance(spec, str) and spec:
+            return spec
+    return None
+
+
+def _recent_player_sources(value: Any, participant_ids: set[int], limit: int = 10) -> list[dict[str, str]]:
+    sources: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for record in _records(value):
+        actor_id = record.get("id", record.get("actorID", record.get("actorId")))
+        if not isinstance(actor_id, int) or actor_id not in participant_ids:
+            continue
+        name = record.get("name")
+        spec = _record_spec(record)
+        server = record.get("server")
+        region = record.get("serverRegion", record.get("region"))
+        if isinstance(server, dict):
+            region = region or server.get("region")
+            server = server.get("slug", server.get("name"))
+        if isinstance(region, dict):
+            region = region.get("compactName", region.get("slug", region.get("name")))
+        server_slug = record.get("serverSlug", server)
+        if not all(isinstance(item, str) and item for item in (name, spec, server_slug, region)):
+            continue
+        source = {
+            "actor_id": str(actor_id),
+            "name": name,
+            "spec": spec,
+            "server_slug": server_slug,
+            "server_region": region,
+        }
+        key = (name.casefold(), server_slug.casefold(), region.casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        sources.append(source)
+        if len(sources) >= limit:
+            break
+    return sources
+
+
+def _recent_rankings_query(sources: list[dict[str, str]], encounter_id: int, difficulty: int, size: int) -> tuple[str, dict[str, Any]]:
+    definitions = ["$encounterId: Int!", "$difficulty: Int!", "$size: Int!"]
+    variables: dict[str, Any] = {"encounterId": encounter_id, "difficulty": difficulty, "size": size}
+    fields = []
+    for index, source in enumerate(sources):
+        definitions.extend((f"$name{index}: String!", f"$server{index}: String!", f"$region{index}: String!", f"$spec{index}: String!"))
+        variables.update({
+            f"name{index}": source["name"],
+            f"server{index}": source["server_slug"],
+            f"region{index}": source["server_region"],
+            f"spec{index}": source["spec"],
+        })
+        fields.append(
+            f"player{index}: character(name: $name{index}, serverSlug: $server{index}, serverRegion: $region{index}) "
+            f"{{ encounterRankings(compare: Parses, difficulty: $difficulty, encounterID: $encounterId, "
+            f"includeOtherPlayers: true, byBracket: true, size: $size, specName: $spec{index}, timeframe: Today) }}"
+        )
+    query = f"query HelloThereLogsRecentPeerRankings({', '.join(definitions)}) {{ characterData {{ {' '.join(fields)} }} }}"
+    return query, variables
 
 
 def _average_item_level(value: Any) -> float | None:
@@ -401,6 +482,7 @@ class ReportService:
         if (
             normalized_fight["encounter_id"] != target_encounter_id
             or normalized_fight.get("difficulty") != target_difficulty
+            or normalized_fight.get("kill") is not True
             or len(normalized_fight.get("friendly_players") or []) != target_size
         ):
             return None
@@ -432,10 +514,12 @@ class ReportService:
             "player_details": raw_report.get("playerDetails"),
         }
 
-    async def get_benchmarks(self, code: str, fight_id: int, strictness: str = "balanced") -> dict[str, Any]:
-        """Return public encounter logs matched by raid size and pull duration."""
+    async def get_benchmarks(self, code: str, fight_id: int, strictness: str = "balanced", cohort_source: str = "recent") -> dict[str, Any]:
+        """Return public encounter reports matched by raid size, duration, and available roster data."""
         if strictness not in {"strict", "balanced", "broad"}:
             raise ValueError("Benchmark strictness must be strict, balanced, or broad.")
+        if cohort_source not in {"recent", "execution"}:
+            raise ValueError("Benchmark source must be recent or execution.")
         report = await self.get_report(code)
         fight = next((item for item in report["fights"] if item["fight_id"] == fight_id), None)
         if fight is None:
@@ -443,26 +527,52 @@ class ReportService:
         difficulty = fight.get("difficulty")
         roster_size = len(fight.get("friendly_players") or [])
         if fight["encounter_id"] <= 0 or not isinstance(difficulty, int) or roster_size <= 0:
-            return _unavailable_benchmarks(fight, strictness, "This pull is missing encounter, difficulty, or roster-size data.")
+            return _unavailable_benchmarks(fight, strictness, "This pull is missing encounter, difficulty, or roster-size data.", cohort_source)
 
-        cache_key = f"benchmarks:v2:{code}:{fight_id}:{strictness}"
+        cache_key = f"benchmarks:v3:{code}:{fight_id}:{strictness}:{cohort_source}"
         cached = self.cache.get(cache_key)
         if cached is not None:
             return cached
-        data = await self.client.query(ENCOUNTER_RANKINGS_QUERY, {
-            "encounterId": fight["encounter_id"],
-            "difficulty": difficulty,
-            "size": roster_size,
-        })
-        world_data = data.get("worldData")
-        encounter = world_data.get("encounter") if isinstance(world_data, dict) else None
-        if not isinstance(encounter, dict):
-            return _unavailable_benchmarks(fight, strictness, "Warcraft Logs returned no encounter leaderboard for this pull.")
-        ranking_data = encounter.get("fightRankings")
-        rows = _ranking_rows(ranking_data)
+        analysis = await self.get_fight_analysis(code, fight_id)
+        if cohort_source == "execution":
+            data = await self.client.query(ENCOUNTER_RANKINGS_QUERY, {
+                "encounterId": fight["encounter_id"],
+                "difficulty": difficulty,
+                "size": roster_size,
+            })
+            world_data = data.get("worldData")
+            encounter = world_data.get("encounter") if isinstance(world_data, dict) else None
+            if not isinstance(encounter, dict):
+                return _unavailable_benchmarks(fight, strictness, "Warcraft Logs returned no encounter leaderboard for this pull.", cohort_source)
+            encounter_name = encounter.get("name") or fight["name"]
+            rows = _ranking_rows(encounter.get("fightRankings"))
+            source_label = "Warcraft Logs execution leaderboard"
+            matched_specs: dict[tuple[str, int], set[str]] = {}
+        else:
+            identities = _recent_player_sources(analysis.get("player_details"), set(fight.get("friendly_players") or []))
+            if not identities:
+                return _unavailable_benchmarks(fight, strictness, "Recent peer matching needs player name, specialization, realm, and region from Warcraft Logs player details.", cohort_source)
+            rankings_query, variables = _recent_rankings_query(identities, fight["encounter_id"], difficulty, roster_size)
+            data = await self.client.query(rankings_query, variables)
+            character_data = data.get("characterData")
+            if not isinstance(character_data, dict):
+                return _unavailable_benchmarks(fight, strictness, "Warcraft Logs returned no recent character rankings for this roster.", cohort_source)
+            rows = []
+            matched_specs = {}
+            for index, identity in enumerate(identities):
+                character = character_data.get(f"player{index}")
+                ranking_rows = _ranking_rows(character.get("encounterRankings") if isinstance(character, dict) else None)
+                for row in ranking_rows:
+                    candidate = _ranking_candidate(row)
+                    if candidate is None:
+                        continue
+                    key = (candidate["report_code"], candidate["fight_id"])
+                    matched_specs.setdefault(key, set()).add(identity["spec"])
+                    rows.append(row)
+            encounter_name = fight["name"]
+            source_label = "Warcraft Logs recent two-week spec parses"
         duration_seconds = fight["duration_ms"] / 1000
         duration_tolerance = {"strict": 0.10, "balanced": 0.20, "broad": None}[strictness]
-        analysis = await self.get_fight_analysis(code, fight_id)
         target_classes = _class_counts(analysis.get("actors", []))
         if sum(target_classes.values()) != roster_size:
             target_classes = {}
@@ -479,6 +589,8 @@ class ReportService:
             if key in seen_candidates:
                 continue
             seen_candidates.add(key)
+            if cohort_source == "recent":
+                candidate["matched_specs"] = sorted(matched_specs.get(key, set()))
             if duration_tolerance is not None and candidate["duration_seconds"] is not None:
                 difference = abs(candidate["duration_seconds"] - duration_seconds) / max(1, duration_seconds)
                 if difference > duration_tolerance:
@@ -531,7 +643,9 @@ class ReportService:
             reference_analyses.append(reference)
             candidates.append(candidate)
         limitations = [
-            "Reference reports are drawn from WCL's execution-ranked kills, so this cohort is aspirational and not a typical-performance baseline.",
+            "Reference reports are drawn from WCL's execution-ranked kills, so this cohort is aspirational and not a typical-performance baseline."
+            if cohort_source == "execution"
+            else "Recent references are limited to reports surfaced by up to ten roster characters' same-spec WCL rankings; this is not a random or comprehensive raid sample.",
             "Cross-log player comparisons use class when specialization is absent; role and assignment differences can still matter.",
             "This is a reference cohort, not a player grade; assignments and encounter context still matter.",
         ]
@@ -539,15 +653,16 @@ class ReportService:
             limitations.append(f"{failed_reports} leaderboard report(s) could not be loaded for detailed comparison.")
         result = {
             "status": "available" if candidates else "unavailable" if failed_reports else "empty",
-            "encounter": encounter.get("name") or fight["name"],
+            "encounter": encounter_name,
             "strictness": strictness,
-            "source": "Warcraft Logs execution leaderboard",
+            "cohort_source": cohort_source,
+            "source": source_label,
             "sample_size": len(candidates),
             "match_basis": [
                 "same encounter",
                 "same difficulty",
                 f"same raid size ({roster_size})",
-                "kill leaderboard records",
+                "same-spec recent rankings" if cohort_source == "recent" else "execution leaderboard kills",
                 f"pull duration within {int(duration_tolerance * 100)}%" if duration_tolerance is not None else "duration not filtered",
                 f"class composition overlap ≥ {int(composition_floor * 100)}%" if composition_floor is not None and target_classes else "class composition not filtered",
                 f"average item level within ±{item_level_tolerance:.0f}" if item_level_tolerance is not None and target_ilvl is not None else "item level not filtered",

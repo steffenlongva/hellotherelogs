@@ -43,12 +43,21 @@ class BenchmarkClient:
                 "masterData": {"actors": _actors("Warrior", "Priest")},
                 "friendlyDamage0": {"data": [], "nextPageTimestamp": None},
                 "friendlyDamage1": {"data": [], "nextPageTimestamp": None},
+                "playerDetails": {"players": [
+                    {"id": 11, "name": "Player One", "spec": "Fury", "server": {"slug": "realm-one", "region": {"compactName": "US"}}},
+                    {"id": 12, "name": "Player Two", "spec": "Holy", "server": {"slug": "realm-two", "region": {"compactName": "EU"}}},
+                ]},
             }}}
         if query == ENCOUNTER_RANKINGS_QUERY:
             return {"worldData": {"encounter": {"name": "Test Boss", "fightRankings": json.dumps({"rankings": [
                 {"report": {"code": "PeerA123", "fightID": 10}, "duration": 60, "guild": "Peer A", "rankPercent": 92},
                 {"report": {"code": "PeerB123", "fightID": 20}, "duration": 60, "guild": "Peer B", "rankPercent": 88},
             ]})}}}
+        if query.lstrip().startswith("query HelloThereLogsRecentPeerRankings"):
+            return {"characterData": {
+                "player0": {"encounterRankings": {"rankings": [{"report": {"code": "PeerA123", "fightID": 10}, "rankPercent": 92}]}},
+                "player1": {"encounterRankings": {"rankings": [{"report": {"code": "PeerA123", "fightID": 10}, "rankPercent": 88}]}},
+            }}
         if query == BENCHMARK_REPORT_QUERY:
             code = variables["code"]
             fight_id = variables["fightId"]
@@ -142,6 +151,21 @@ def test_benchmark_helpers_use_actor_class_and_item_data() -> None:
     assert _actor_specs(details) == {11: "Fury"}
 
 
+def test_recent_peer_sources_require_actor_spec_and_server_identity() -> None:
+    from app.services.report_service import _recent_player_sources
+
+    details = {"players": [
+        {"id": 11, "name": "Player One", "spec": "Fury", "server": {"slug": "realm-one", "region": {"compactName": "US"}}},
+        {"id": 12, "name": "Player Two", "spec": "Holy", "server": {"slug": "realm-two", "region": {"compactName": "EU"}}},
+        {"id": 99, "name": "Outsider", "spec": "Fury", "server": "realm-three", "region": "US"},
+    ]}
+
+    assert _recent_player_sources(details, {11, 12}) == [
+        {"actor_id": "11", "name": "Player One", "spec": "Fury", "server_slug": "realm-one", "server_region": "US"},
+        {"actor_id": "12", "name": "Player Two", "spec": "Holy", "server_slug": "realm-two", "server_region": "EU"},
+    ]
+
+
 def test_get_benchmarks_filters_and_returns_reference_reports() -> None:
     service = ReportService(BenchmarkClient(), MemoryCache())  # type: ignore[arg-type]
 
@@ -155,3 +179,14 @@ def test_get_benchmarks_filters_and_returns_reference_reports() -> None:
     assert result["reference_analyses"][0]["player_specs"] == {"11": "Fury", "12": "Holy"}
     assert result["reference_analyses"][0]["tables"]["casts"] == {"data": {"entries": []}}
     assert "average item level within ±3" in result["match_basis"]
+
+
+def test_recent_peer_benchmarks_use_roster_rankings() -> None:
+    service = ReportService(BenchmarkClient(), MemoryCache())  # type: ignore[arg-type]
+
+    result = asyncio.run(service.get_benchmarks("Guild123", 1, "strict", "recent"))
+
+    assert result["cohort_source"] == "recent"
+    assert result["source"] == "Warcraft Logs recent two-week spec parses"
+    assert result["sample_size"] == 1
+    assert result["candidates"][0]["matched_specs"] == ["Fury", "Holy"]

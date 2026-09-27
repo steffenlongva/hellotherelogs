@@ -89,10 +89,11 @@ async def get_fight_benchmarks(
     report_code: str = REPORT_CODE_PATH,
     fight_id: int = Path(gt=0),
     strictness: str = Query(default="balanced", pattern="^(strict|balanced|broad)$"),
+    source: str = Query(default="recent", pattern="^(recent|execution)$"),
     service: ReportService = Depends(get_report_service),
 ) -> dict[str, Any]:
     try:
-        return await service.get_benchmarks(report_code, fight_id, strictness)
+        return await service.get_benchmarks(report_code, fight_id, strictness, source)
     except Exception as exc:
         logger.exception("Benchmark request failed for report %s fight %s", report_code, fight_id)
         _raise_api_error(exc)
