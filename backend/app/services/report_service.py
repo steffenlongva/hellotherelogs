@@ -1,3 +1,4 @@
+import json
 from typing import Any
 
 from app.services.report_normalizer import normalize_fight, normalize_report
@@ -13,11 +14,12 @@ query HelloThereLogsReport($code: String!) {
       title
       startTime
       endTime
-      zone { name }
+      zone { id name }
       guild { name }
       fights {
         id
         encounterID
+        difficulty
         name
         startTime
         endTime
@@ -38,6 +40,7 @@ query HelloThereLogsReportFights($code: String!) {
       fights {
         id
         encounterID
+        difficulty
         name
         startTime
         endTime
@@ -80,11 +83,145 @@ class ReportNotFoundError(LookupError):
     pass
 
 
+def _unavailable_benchmarks(fight: dict[str, Any], strictness: str, reason: str) -> dict[str, Any]:
+    return {
+        "status": "unavailable",
+        "encounter": fight.get("name"),
+        "strictness": strictness,
+        "source": "Warcraft Logs execution leaderboard",
+        "sample_size": 0,
+        "match_basis": [],
+        "limitations": [reason],
+        "candidates": [],
+    }
+
+
+def _ranking_rows(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return []
+    found: list[dict[str, Any]] = []
+    visited: set[int] = set()
+
+    def visit(node: Any, depth: int = 0) -> None:
+        if depth > 9 or id(node) in visited:
+            return
+        if isinstance(node, (dict, list)):
+            visited.add(id(node))
+        if isinstance(node, list):
+            for item in node:
+                visit(item, depth + 1)
+        elif isinstance(node, dict):
+            report = node.get("report")
+            code = node.get("reportCode") or (report.get("code") if isinstance(report, dict) else None)
+            if isinstance(code, str) and code:
+                found.append(node)
+            else:
+                for item in node.values():
+                    visit(item, depth + 1)
+
+    visit(value)
+    return found
+
+
+def _records(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return []
+    records: list[dict[str, Any]] = []
+    def visit(node: Any, depth: int = 0) -> None:
+        if depth > 10:
+            return
+        if isinstance(node, dict):
+            records.append(node)
+            for item in node.values():
+                visit(item, depth + 1)
+        elif isinstance(node, list):
+            for item in node:
+                visit(item, depth + 1)
+    visit(value)
+    return records
+
+
+def _class_counts(value: Any) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for record in _records(value):
+        if record.get("type") not in (None, "Player"):
+            continue
+        class_name = record.get("subType") or record.get("className") or record.get("class")
+        if isinstance(class_name, dict):
+            class_name = class_name.get("name")
+        if isinstance(class_name, str) and class_name:
+            counts[class_name] = counts.get(class_name, 0) + 1
+    return counts
+
+
+def _average_item_level(value: Any) -> float | None:
+    records = _records(value)
+    summaries = [
+        record.get(key)
+        for record in records
+        for key in ("averageItemLevel", "averageItemLevelEquipped", "avgItemLevel", "ilvl")
+        if isinstance(record.get(key), (int, float)) and not isinstance(record.get(key), bool)
+    ]
+    values = summaries
+    if not values:
+        values = [
+            record.get("itemLevel", record.get("ilvl"))
+            for record in records
+            if isinstance(record.get("itemLevel", record.get("ilvl")), (int, float))
+            and not isinstance(record.get("itemLevel", record.get("ilvl")), bool)
+        ]
+    return sum(values) / len(values) if values else None
+
+
+def _ranking_candidate(row: dict[str, Any]) -> dict[str, Any] | None:
+    report = row.get("report") if isinstance(row.get("report"), dict) else {}
+    code = row.get("reportCode") or report.get("code")
+    fight_id = row.get("fightID", row.get("fightId", report.get("fightID", report.get("fightId"))))
+    if not isinstance(code, str) or not code.isalnum() or not isinstance(fight_id, int):
+        return None
+    duration = next((row.get(key) for key in ("duration", "durationMS", "durationMs", "fightDuration") if isinstance(row.get(key), (int, float)) and not isinstance(row.get(key), bool)), None)
+    if duration is not None:
+        duration = float(duration) / (1000 if duration > 10000 else 1)
+    guild = row.get("guild")
+    if isinstance(guild, dict):
+        guild = guild.get("name")
+    return {
+        "report_code": code,
+        "fight_id": fight_id,
+        "title": row.get("title") or report.get("title"),
+        "guild": guild if isinstance(guild, str) else None,
+        "duration_seconds": duration,
+        "rank_percent": row.get("rankPercent", row.get("rankPercentile")),
+        "composition_similarity": None,
+        "average_item_level": None,
+        "item_level_difference": None,
+        "url": f"https://fresh.warcraftlogs.com/reports/{code}#fight={fight_id}",
+    }
+
+
 FRIENDLY_DAMAGE_PAGE_QUERY = """
 query HelloThereLogsFriendlyDamagePage($code: String!, $fightId: Int!, $sourceId: Int!, $startTime: Float!) {
   reportData {
     report(code: $code) {
       friendlyDamagePage: events(dataType: DamageDone, fightIDs: [$fightId], sourceID: $sourceId, startTime: $startTime, limit: 10000, useActorIDs: true, useAbilityIDs: true) { data nextPageTimestamp }
+    }
+  }
+}
+"""
+
+ENCOUNTER_RANKINGS_QUERY = """
+query HelloThereLogsEncounterBenchmarks($encounterId: Int!, $difficulty: Int!, $size: Int!) {
+  worldData {
+    encounter(id: $encounterId) {
+      id
+      name
+      fightRankings(difficulty: $difficulty, size: $size, metric: Execution, includeOtherPlayers: true)
     }
   }
 }
@@ -105,18 +242,18 @@ class ReportService:
         return report
 
     async def get_report(self, code: str) -> dict[str, Any]:
-        cache_key = f"report:v1:{code}"
+        cache_key = f"report:v2:{code}"
         cached = self.cache.get(cache_key)
         if cached is not None:
             return cached
         data = await self.client.query(REPORT_QUERY, {"code": code})
         normalized = normalize_report(self._report_from_response(data))
         self.cache.set(cache_key, normalized)
-        self.cache.set(f"fights:v1:{code}", normalized["fights"])
+        self.cache.set(f"fights:v2:{code}", normalized["fights"])
         return normalized
 
     async def get_fights(self, code: str) -> list[dict[str, Any]]:
-        cache_key = f"fights:v1:{code}"
+        cache_key = f"fights:v2:{code}"
         cached = self.cache.get(cache_key)
         if cached is not None:
             return cached
@@ -199,6 +336,99 @@ class ReportService:
             },
             "player_details": raw_report.get("playerDetails"),
             "actors": participant_actors,
+        }
+        self.cache.set(cache_key, result)
+        return result
+
+    async def get_benchmarks(self, code: str, fight_id: int, strictness: str = "balanced") -> dict[str, Any]:
+        """Return public encounter logs matched by raid size and pull duration."""
+        if strictness not in {"strict", "balanced", "broad"}:
+            raise ValueError("Benchmark strictness must be strict, balanced, or broad.")
+        report = await self.get_report(code)
+        fight = next((item for item in report["fights"] if item["fight_id"] == fight_id), None)
+        if fight is None:
+            raise ReportNotFoundError("Fight was not found in this report.")
+        difficulty = fight.get("difficulty")
+        roster_size = len(fight.get("friendly_players") or [])
+        if fight["encounter_id"] <= 0 or not isinstance(difficulty, int) or roster_size <= 0:
+            return _unavailable_benchmarks(fight, strictness, "This pull is missing encounter, difficulty, or roster-size data.")
+
+        cache_key = f"benchmarks:v1:{code}:{fight_id}:{strictness}"
+        cached = self.cache.get(cache_key)
+        if cached is not None:
+            return cached
+        data = await self.client.query(ENCOUNTER_RANKINGS_QUERY, {
+            "encounterId": fight["encounter_id"],
+            "difficulty": difficulty,
+            "size": roster_size,
+        })
+        world_data = data.get("worldData")
+        encounter = world_data.get("encounter") if isinstance(world_data, dict) else None
+        if not isinstance(encounter, dict):
+            return _unavailable_benchmarks(fight, strictness, "Warcraft Logs returned no encounter leaderboard for this pull.")
+        ranking_data = encounter.get("fightRankings")
+        rows = _ranking_rows(ranking_data)
+        duration_seconds = fight["duration_ms"] / 1000
+        duration_tolerance = {"strict": 0.10, "balanced": 0.20, "broad": None}[strictness]
+        analysis = await self.get_fight_analysis(code, fight_id)
+        target_classes = _class_counts(analysis.get("actors", []))
+        target_ilvl = _average_item_level(analysis.get("player_details"))
+        composition_floor = {"strict": 0.80, "balanced": 0.60, "broad": None}[strictness]
+        item_level_tolerance = {"strict": 3.0, "balanced": 6.0, "broad": None}[strictness]
+        candidates = []
+        for row in rows:
+            candidate = _ranking_candidate(row)
+            if candidate is None:
+                continue
+            if duration_tolerance is not None and candidate["duration_seconds"] is None:
+                continue
+            if duration_tolerance is not None:
+                difference = abs(candidate["duration_seconds"] - duration_seconds) / max(1, duration_seconds)
+                if difference > duration_tolerance:
+                    continue
+            candidate_classes = _class_counts(row)
+            if composition_floor is not None and target_classes and not candidate_classes:
+                continue
+            if composition_floor is not None and target_classes and candidate_classes:
+                overlap = sum(min(count, candidate_classes.get(name, 0)) for name, count in target_classes.items())
+                similarity = overlap / max(1, sum(target_classes.values()))
+                if similarity < composition_floor:
+                    continue
+                candidate["composition_similarity"] = round(similarity, 3)
+            candidate_ilvl = _average_item_level(row)
+            if item_level_tolerance is not None and target_ilvl is not None and candidate_ilvl is None:
+                continue
+            if candidate_ilvl is not None:
+                candidate["average_item_level"] = round(candidate_ilvl, 1)
+                if target_ilvl is not None:
+                    item_level_difference = candidate_ilvl - target_ilvl
+                    if item_level_tolerance is not None and abs(item_level_difference) > item_level_tolerance:
+                        continue
+                    candidate["item_level_difference"] = round(item_level_difference, 1)
+            candidates.append(candidate)
+        candidates = candidates[:50]
+        result = {
+            "status": "available" if candidates else "empty",
+            "encounter": encounter.get("name") or fight["name"],
+            "strictness": strictness,
+            "source": "Warcraft Logs execution leaderboard",
+            "sample_size": len(candidates),
+            "match_basis": [
+                "same encounter",
+                "same difficulty",
+                f"same raid size ({roster_size})",
+                "kill leaderboard records",
+                f"pull duration within {int(duration_tolerance * 100)}%" if duration_tolerance is not None else "duration not filtered",
+                f"class composition overlap ≥ {int(composition_floor * 100)}% when WCL returns it" if composition_floor is not None else "class composition not filtered",
+                f"average item level within ±{item_level_tolerance:.0f} when WCL returns it" if item_level_tolerance is not None else "item level not filtered",
+            ],
+            "limitations": [
+                "The public leaderboard is execution-ranked and may favor exceptional logs over typical raid performance.",
+                "Player specialization is not consistently present in the public fight leaderboard response.",
+                "Composition and item level filters are applied only when Warcraft Logs includes those fields; otherwise they are shown as unavailable.",
+                "This is a reference cohort, not a player grade; assignments and encounter context still matter.",
+            ],
+            "candidates": candidates,
         }
         self.cache.set(cache_key, result)
         return result

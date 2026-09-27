@@ -7,6 +7,7 @@ type Health = { status: string; service: string }
 type Fight = {
   fight_id: number
   encounter_id: number
+  difficulty: number | null
   name: string
   start_time_ms: number
   end_time_ms: number
@@ -20,6 +21,7 @@ type Report = {
   code: string
   title: string
   zone: string | null
+  zone_id: number | null
   guild: string | null
   start_time: string
   end_time: string
@@ -33,6 +35,8 @@ type Report = {
 }
 type Actor = { id: number; name: string; type: string; subType: string | null }
 type FightAnalysis = { fight: Fight; tables: Record<string, unknown>; events: Record<string, unknown>; player_details: unknown; actors: Actor[] }
+type BenchmarkCandidate = { report_code: string; fight_id: number; title: string | null; guild: string | null; duration_seconds: number | null; rank_percent: number | null; composition_similarity: number | null; average_item_level: number | null; item_level_difference: number | null; url: string }
+type Benchmarks = { status: 'available' | 'empty' | 'unavailable'; encounter: string | null; strictness: string; source: string; sample_size: number; match_basis: string[]; limitations: string[]; candidates: BenchmarkCandidate[] }
 type AbilityUptime = { name: string; percent: number | null }
 type PlayerStats = Actor & { damage: number | null; dps: number | null; healing: number | null; hps: number | null; damageTaken: number | null; friendlyDamage: number | null; friendlyDamageReliable: boolean; friendlyDamageAbilities: Array<{ name: string; amount: number; hits: number }>; deaths: Array<Record<string, unknown>>; interrupts: Array<Record<string, unknown>>; interruptsAvailable: boolean; consumables: string[]; gear: Array<Record<string, unknown>>; averageItemLevel: number | null; enchantCount: number | null; gemCount: number | null; auras: string[]; uptimes: AbilityUptime[]; uptimeAverage: number | null }
 
@@ -71,6 +75,13 @@ async function fetchFightAnalysis(code: string, fightId: number): Promise<FightA
   const response = await fetch(`/api/reports/${encodeURIComponent(code)}/fights/${fightId}/analysis`)
   const payload = await response.json()
   if (!response.ok) throw new Error(payload.detail ?? 'Could not load fight analysis.')
+  return payload
+}
+
+async function fetchBenchmarks(code: string, fightId: number, strictness: string): Promise<Benchmarks> {
+  const response = await fetch(`/api/reports/${encodeURIComponent(code)}/fights/${fightId}/benchmarks?strictness=${strictness}`)
+  const payload = await response.json()
+  if (!response.ok) throw new Error(payload.detail ?? 'Could not load comparable logs.')
   return payload
 }
 
@@ -317,8 +328,10 @@ function ReportPage({ code }: { code: string }) {
   const report = useQuery({ queryKey: ['report', code], queryFn: () => fetchReport(code), retry: 1 })
   const fights = useQuery({ queryKey: ['report-fights', code], queryFn: () => fetchFights(code), enabled: report.isSuccess, retry: 1 })
   const [selectedFightId, setSelectedFightId] = useState<number | null>(null)
+  const [benchmarkStrictness, setBenchmarkStrictness] = useState('balanced')
   const analysisFightId = selectedFightId ?? report.data?.fights.find((fight) => fight.encounter_id > 0)?.fight_id ?? null
   const analysis = useQuery({ queryKey: ['fight-analysis', code, analysisFightId], queryFn: () => fetchFightAnalysis(code, analysisFightId as number), enabled: analysisFightId !== null, retry: 1 })
+  const benchmarks = useQuery({ queryKey: ['fight-benchmarks', code, analysisFightId, benchmarkStrictness], queryFn: () => fetchBenchmarks(code, analysisFightId as number, benchmarkStrictness), enabled: analysisFightId !== null, retry: 1 })
   const playerStats = useMemo(() => analysis.data ? makePlayerStats(analysis.data) : [], [analysis.data])
   const deathEvents = analysis.data ? tableRows(analysis.data.events.deaths) : []
   const interruptEvents = analysis.data ? tableRows(analysis.data.events.interrupts) : []
@@ -376,6 +389,7 @@ function ReportPage({ code }: { code: string }) {
             <article className="overview-card composition-card"><span className="overview-icon tint-mint"><Swords size={17} /></span><div><strong>{playerStats.length}</strong><span>Raid roster</span></div><div className="comp-bars">{composition.map(([name, count]) => <span key={name} title={`${name}: ${count}`}><i style={{ width: `${100 * count / Math.max(1, playerStats.length)}%` }} />{name}<b>{count}</b></span>)}</div></article>
           </section>
           <TimelineCard deaths={deathEvents} interrupts={interruptEvents} analysis={analysis.data} />
+          <BenchmarkCard benchmarks={benchmarks.data} isLoading={benchmarks.isLoading} error={benchmarks.error?.message} strictness={benchmarkStrictness} onStrictnessChange={setBenchmarkStrictness} />
           <LearningPlan players={playerStats} deaths={deathEvents} interruptCount={interruptEvents.length} interruptsAvailable={eventDataAvailable(analysis.data.events.interrupts)} deathsAvailable={eventDataAvailable(analysis.data.events.deaths)} />
           <div className="leader-grid">
             <LeaderCard title="Damage" players={metricLeaders('damage')} metric="damage" tint="blue" />
@@ -403,6 +417,19 @@ function ReportPage({ code }: { code: string }) {
 }
 
 function formatMetric(value: number | null): string { return value === null ? '—' : Math.round(value).toLocaleString() }
+
+function BenchmarkCard({ benchmarks, isLoading, error, strictness, onStrictnessChange }: { benchmarks?: Benchmarks; isLoading: boolean; error?: string; strictness: string; onStrictnessChange: (value: string) => void }) {
+  return <article className="analysis-card benchmark-card">
+    <div className="card-heading"><div><h3>Comparable raid logs</h3><p>Public kill logs for this encounter and raid size, filtered by pull duration.</p></div><label className="benchmark-filter">MATCHING<select value={strictness} onChange={(event) => onStrictnessChange(event.target.value)}><option value="strict">Close · ±10%</option><option value="balanced">Balanced · ±20%</option><option value="broad">Broad · any duration</option></select></label></div>
+    {isLoading && <p className="analysis-empty">Loading public reference logs…</p>}
+    {error && <p className="analysis-empty">Reference logs unavailable: {error}</p>}
+    {benchmarks && <>
+      <div className="benchmark-meta"><strong>{benchmarks.sample_size}</strong><span>{benchmarks.sample_size === 1 ? 'candidate log' : 'candidate logs'}</span><span className="benchmark-source">{benchmarks.source}</span></div>
+      {benchmarks.candidates.length > 0 ? <div className="benchmark-list">{benchmarks.candidates.map((candidate) => <a href={candidate.url} key={`${candidate.report_code}-${candidate.fight_id}`} target="_blank" rel="noreferrer"><span><strong>{candidate.guild ?? candidate.title ?? candidate.report_code}</strong><small>{candidate.title ?? `Report ${candidate.report_code}`}{candidate.duration_seconds === null ? '' : ` · ${formatDuration(candidate.duration_seconds * 1000)}`}{candidate.composition_similarity === null ? '' : ` · ${(candidate.composition_similarity * 100).toFixed(0)}% class overlap`}{candidate.average_item_level === null ? '' : ` · ilvl ${candidate.average_item_level.toFixed(1)}`}</small></span><span>{candidate.rank_percent === null ? 'OPEN LOG' : `${Number(candidate.rank_percent).toFixed(1)}%`} <ExternalLink size={12} /></span></a>)}</div> : <p className="analysis-empty">{benchmarks.status === 'unavailable' ? benchmarks.limitations[0] : 'No leaderboard logs met this duration filter. Try a broader match.'}</p>}
+      <details className="benchmark-notes"><summary>How these logs were matched</summary><p>{benchmarks.match_basis.length ? benchmarks.match_basis.join(' · ') : 'The report is missing fields needed to select a cohort.'}</p>{benchmarks.limitations.map((limitation) => <p key={limitation}>{limitation}</p>)}</details>
+    </>}
+  </article>
+}
 
 function LearningPlan({ players, deaths, interruptCount, deathsAvailable, interruptsAvailable }: { players: PlayerStats[]; deaths: Array<Record<string, unknown>>; interruptCount: number; deathsAvailable: boolean; interruptsAvailable: boolean }) {
   const deathTimes = deaths.map((row) => Number(row.timestamp)).filter(Number.isFinite).sort((a, b) => a - b)

@@ -2,7 +2,7 @@ import logging
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Path, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from pydantic import BaseModel, Field
 
 from app.services.report_normalizer import ReportNormalizationError
@@ -81,4 +81,18 @@ async def get_fight_analysis(
         return await service.get_fight_analysis(report_code, fight_id)
     except Exception as exc:
         logger.exception("Fight analysis request failed for report %s fight %s", report_code, fight_id)
+        _raise_api_error(exc)
+
+
+@router.get("/{report_code}/fights/{fight_id}/benchmarks")
+async def get_fight_benchmarks(
+    report_code: str = REPORT_CODE_PATH,
+    fight_id: int = Path(gt=0),
+    strictness: str = Query(default="balanced", pattern="^(strict|balanced|broad)$"),
+    service: ReportService = Depends(get_report_service),
+) -> dict[str, Any]:
+    try:
+        return await service.get_benchmarks(report_code, fight_id, strictness)
+    except Exception as exc:
+        logger.exception("Benchmark request failed for report %s fight %s", report_code, fight_id)
         _raise_api_error(exc)

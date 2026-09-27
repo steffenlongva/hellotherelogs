@@ -20,6 +20,7 @@ hellotherelogs is a self-hosted Warcraft Logs Fresh raid analysis app, currently
 - The top bar includes persistent Dark, Light, Catppuccin Mocha, Tokyo Night, and Nord themes plus a persistent text-size slider. The default font scale is 1.1, centered in the slider's range; font sizes use `rem` so it scales the interface consistently.
 - The frontend header shows the built commit prefix and UTC build date. GitHub Actions passes both values into the frontend image so the currently deployed Unraid build can be identified after image updates.
 - The encounter page includes a four-part learning plan for survival, interrupt assignments, raid coverage, and cooldown planning. It distinguishes observed evidence from topics that need review and states where the current report data cannot confirm an issue.
+- The selected-pull view now has a comparable-log cohort panel. It requests the public Warcraft Logs execution leaderboard for the same encounter, difficulty, and raid size, with strict (±10%), balanced (±20%), or broad duration matching. It filters class composition when both the pull and leaderboard response expose usable class data, and shows item-level metadata when WCL returns it. Candidate entries link to their source logs.
 - Critical-moment names fall back to the selected-fight actor roster when WCL events provide actor IDs without names. Uptime parsing supports WCL's nested `data.auras` table shape, calculates percentages from `totalUptime` and `totalTime`, and includes a Debuffs table for class-applied debuffs.
 - Learning-plan topics use expandable disclosure cards so review steps can grow without crowding the encounter page.
 - Suggestions and summaries are evidence-led review prompts, not grades or class/spec rotation prescriptions.
@@ -48,6 +49,7 @@ The current review is a first functional data layer, not the finished guild coac
 6. Validate gear, gems, enchants, and consumables against real response samples; current enrichment shows reported item level/enchant/gem fields and detects likely consumable casts by name.
 7. Finish paging death and interrupt event streams, and handle archive/access failures and API rate limits deliberately. Friendly damage follows event pagination with a bounded six-page cap. Cache expensive report analysis using the existing cache.
 8. Add mocked backend coverage for analysis response shapes, invalid fight IDs, caching, and WCL failures. Build the frontend in an environment with npm dependencies installed.
+9. Extend the benchmark cohort beyond public execution-ranked kills: obtain representative recent parses, reliably match specialization, composition, item-level bracket, and kill time, then compare raid/player metrics with sample counts and distributions. The current leaderboard panel is cohort discovery only; it does not yet calculate per-player or raid metric deltas, cast/cooldown differences, or benchmark-based suggestions. Keep this limitation visible until those comparisons are implemented and validated against real public Fresh response shapes.
 
 ## Development and validation
 
