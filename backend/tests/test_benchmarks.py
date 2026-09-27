@@ -1,0 +1,157 @@
+import asyncio
+import json
+from typing import Any
+
+from app.services.report_service import (
+    BENCHMARK_REPORT_QUERY,
+    ENCOUNTER_RANKINGS_QUERY,
+    FIGHT_ANALYSIS_QUERY,
+    REPORT_QUERY,
+    ReportService,
+    _actor_specs,
+    _average_item_level,
+    _class_counts,
+    _ranking_candidate,
+    _ranking_rows,
+)
+
+
+class MemoryCache:
+    def __init__(self):
+        self.values: dict[str, Any] = {}
+
+    def get(self, key: str) -> Any:
+        return self.values.get(key)
+
+    def set(self, key: str, value: Any) -> None:
+        self.values[key] = value
+
+
+class BenchmarkClient:
+    def __init__(self):
+        self.peer_reports = {
+            ("PeerA123", 10): _peer_report(10, "Warrior", "Priest", 70),
+            ("PeerB123", 20): _peer_report(20, "Mage", "Druid", 82),
+        }
+
+    async def query(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        if query == REPORT_QUERY:
+            return {"reportData": {"report": _selected_report()}}
+        if query.lstrip().startswith("query HelloThereLogsFightAnalysis"):
+            return {"reportData": {"report": {
+                "fights": [_selected_report()["fights"][0]],
+                "masterData": {"actors": _actors("Warrior", "Priest")},
+                "friendlyDamage0": {"data": [], "nextPageTimestamp": None},
+                "friendlyDamage1": {"data": [], "nextPageTimestamp": None},
+            }}}
+        if query == ENCOUNTER_RANKINGS_QUERY:
+            return {"worldData": {"encounter": {"name": "Test Boss", "fightRankings": json.dumps({"rankings": [
+                {"report": {"code": "PeerA123", "fightID": 10}, "duration": 60, "guild": "Peer A", "rankPercent": 92},
+                {"report": {"code": "PeerB123", "fightID": 20}, "duration": 60, "guild": "Peer B", "rankPercent": 88},
+            ]})}}}
+        if query == BENCHMARK_REPORT_QUERY:
+            code = variables["code"]
+            fight_id = variables["fightId"]
+            return {"reportData": {"report": self.peer_reports[(code, fight_id)]}}
+        raise AssertionError(f"Unexpected query: {query[:80]}")
+
+
+def _actors(first_class: str, second_class: str) -> list[dict[str, Any]]:
+    return [
+        {"id": 11, "name": "Player One", "type": "Player", "subType": first_class},
+        {"id": 12, "name": "Player Two", "type": "Player", "subType": second_class},
+    ]
+
+
+def _fight(fight_id: int, first_class: str, second_class: str, average_item_level: float) -> dict[str, Any]:
+    return {
+        "id": fight_id,
+        "encounterID": 100,
+        "difficulty": 3,
+        "name": "Test Boss",
+        "startTime": 10_000,
+        "endTime": 70_000,
+        "kill": True,
+        "averageItemLevel": average_item_level,
+        "friendlyPlayers": [11, 12],
+    }
+
+
+def _selected_report() -> dict[str, Any]:
+    return {
+        "code": "Guild123",
+        "title": "Guild report",
+        "startTime": 1_700_000_000_000,
+        "endTime": 1_700_000_060_000,
+        "zone": {"id": 10, "name": "Test Zone"},
+        "fights": [_fight(1, "Warrior", "Priest", 70)],
+    }
+
+
+def _peer_report(fight_id: int, first_class: str, second_class: str, average_item_level: float) -> dict[str, Any]:
+    return {
+        "code": f"Peer{fight_id}",
+        "title": "Reference kill",
+        "fights": [_fight(fight_id, first_class, second_class, average_item_level)],
+        "masterData": {"actors": _actors(first_class, second_class)},
+        "damage": {"data": {"entries": []}},
+        "healing": {"data": {"entries": []}},
+        "damageTaken": {"data": {"entries": []}},
+        "casts": {"data": {"entries": []}},
+        "interrupts": {"data": {"entries": []}},
+        "buffUptimes": {"data": {"entries": []}},
+        "abilityUptimes": {"data": {"entries": []}},
+        "debuffUptimes": {"data": {"entries": []}},
+        "deaths": {"data": [], "nextPageTimestamp": None},
+        "interruptEvents": {"data": [], "nextPageTimestamp": None},
+        "playerDetails": {"players": [
+            {"id": 11, "spec": "Fury"},
+            {"id": 12, "spec": "Holy"},
+        ]},
+    }
+
+
+def test_ranking_helpers_extract_public_fight_metadata() -> None:
+    ranking = {"report": {"code": "PeerA123", "fightID": 4}, "duration": 90_000, "rankPercent": 85}
+    rows = _ranking_rows(json.dumps({"rankings": [ranking]}))
+
+    assert rows == [ranking]
+    assert _ranking_candidate(ranking) == {
+        "report_code": "PeerA123",
+        "fight_id": 4,
+        "title": None,
+        "guild": None,
+        "duration_seconds": 90,
+        "rank_percent": 85,
+        "composition_similarity": None,
+        "average_item_level": None,
+        "item_level_difference": None,
+        "url": "https://fresh.warcraftlogs.com/reports/PeerA123#fight=4",
+    }
+
+
+def test_benchmark_helpers_use_actor_class_and_item_data() -> None:
+    participants = [
+        {"type": "Player", "subType": "Warrior"},
+        {"type": "Player", "subType": "Priest"},
+    ]
+    details = {"players": [{"id": 11, "spec": "Fury", "gear": [{"itemLevel": 70}]}]}
+
+    assert _class_counts(participants) == {"Warrior": 1, "Priest": 1}
+    assert _average_item_level(details) == 70
+    assert _actor_specs(details) == {11: "Fury"}
+
+
+def test_get_benchmarks_filters_and_returns_reference_reports() -> None:
+    service = ReportService(BenchmarkClient(), MemoryCache())  # type: ignore[arg-type]
+
+    result = asyncio.run(service.get_benchmarks("Guild123", 1, "strict"))
+
+    assert result["status"] == "available"
+    assert result["sample_size"] == 1
+    assert result["candidates"][0]["report_code"] == "PeerA123"
+    assert result["candidates"][0]["composition_similarity"] == 1
+    assert result["candidates"][0]["average_item_level"] == 70
+    assert result["reference_analyses"][0]["player_specs"] == {"11": "Fury", "12": "Holy"}
+    assert result["reference_analyses"][0]["tables"]["casts"] == {"data": {"entries": []}}
+    assert "average item level within ±3" in result["match_basis"]

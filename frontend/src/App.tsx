@@ -33,12 +33,14 @@ type Report = {
   bosses: Boss[]
   fights: Fight[]
 }
-type Actor = { id: number; name: string; type: string; subType: string | null }
-type FightAnalysis = { fight: Fight; tables: Record<string, unknown>; events: Record<string, unknown>; player_details: unknown; actors: Actor[] }
+type Actor = { id: number; name: string; type: string; subType: string | null; specName?: string | null }
+type FightAnalysis = { fight: Fight; tables: Record<string, unknown>; events: Record<string, unknown>; player_details: unknown; actors: Actor[]; rankings?: { recent_parses: unknown; best_rankings: unknown } }
 type BenchmarkCandidate = { report_code: string; fight_id: number; title: string | null; guild: string | null; duration_seconds: number | null; rank_percent: number | null; composition_similarity: number | null; average_item_level: number | null; item_level_difference: number | null; url: string }
-type Benchmarks = { status: 'available' | 'empty' | 'unavailable'; encounter: string | null; strictness: string; source: string; sample_size: number; match_basis: string[]; limitations: string[]; candidates: BenchmarkCandidate[] }
+type BenchmarkReference = { report_code: string; fight_id: number; title: string | null; fight: Fight; actors: Actor[]; player_specs: Record<string, string>; tables: Record<string, unknown>; events: Record<string, unknown>; player_details?: unknown }
+type Benchmarks = { status: 'available' | 'empty' | 'unavailable'; encounter: string | null; strictness: string; source: string; sample_size: number; match_basis: string[]; limitations: string[]; candidates: BenchmarkCandidate[]; reference_analyses: BenchmarkReference[] }
 type AbilityUptime = { name: string; percent: number | null }
-type PlayerStats = Actor & { damage: number | null; dps: number | null; healing: number | null; hps: number | null; damageTaken: number | null; friendlyDamage: number | null; friendlyDamageReliable: boolean; friendlyDamageAbilities: Array<{ name: string; amount: number; hits: number }>; deaths: Array<Record<string, unknown>>; interrupts: Array<Record<string, unknown>>; interruptsAvailable: boolean; consumables: string[]; gear: Array<Record<string, unknown>>; averageItemLevel: number | null; enchantCount: number | null; gemCount: number | null; auras: string[]; uptimes: AbilityUptime[]; uptimeAverage: number | null }
+type SpellUse = { name: string; count: number }
+type PlayerStats = Actor & { specName: string | null; durationSeconds: number; casts: SpellUse[]; damage: number | null; dps: number | null; healing: number | null; hps: number | null; damageTaken: number | null; friendlyDamage: number | null; friendlyDamageReliable: boolean; friendlyDamageAbilities: Array<{ name: string; amount: number; hits: number }>; deaths: Array<Record<string, unknown>>; interrupts: Array<Record<string, unknown>>; interruptsAvailable: boolean; consumables: string[]; gear: Array<Record<string, unknown>>; averageItemLevel: number | null; enchantCount: number | null; gemCount: number | null; auras: string[]; uptimes: AbilityUptime[]; uptimeAverage: number | null; recentPercentile: number | null; bestPercentile: number | null }
 
 async function getHealth(): Promise<Health> {
   const response = await fetch('/api/health')
@@ -122,6 +124,11 @@ function eventDataAvailable(value: unknown): boolean {
   return true
 }
 
+function eventDataComplete(value: unknown): boolean {
+  const parsed = parseJSON(value)
+  return isRecord(parsed) && 'data' in parsed && parsed.data !== null && parsed.data !== undefined && parsed.nextPageTimestamp === null
+}
+
 function allRecords(value: unknown, output: Array<Record<string, unknown>> = [], depth = 0): Array<Record<string, unknown>> {
   const parsed = parseJSON(value)
   if (depth > 9 || parsed === null || parsed === undefined) return output
@@ -155,6 +162,20 @@ function rowForActor(value: unknown, actor: Actor, role?: 'source' | 'target'): 
   return tableRows(value).find((row) => actorId(row, role) === actor.id || (actorId(row, role) === null && actorName(row, role) === actor.name))
 }
 
+function rankingPercentile(value: unknown, actor: Actor): number | null {
+  const rows = allRecords(value)
+  for (const row of rows) {
+    const names = [row.name, row.characterName, row.playerName, row.sourceName].filter((item): item is string => typeof item === 'string')
+    const ids = [row.id, row.actorID, row.actorId, row.sourceID, row.sourceId].map(Number)
+    if (!names.includes(actor.name) && !ids.includes(actor.id)) continue
+    for (const key of ['rankPercent', 'rankPercentile', 'percentile', 'parsePercentile']) {
+      const result = Number(row[key])
+      if (Number.isFinite(result) && result >= 0 && result <= 100) return result
+    }
+  }
+  return null
+}
+
 function numericValue(row: Record<string, unknown> | undefined, keys: string[]): number | null {
   for (const key of keys) {
     const value = row?.[key]
@@ -165,6 +186,23 @@ function numericValue(row: Record<string, unknown> | undefined, keys: string[]):
     }
   }
   return null
+}
+
+function spellUses(value: unknown, actorName: string): SpellUse[] {
+  const counts = new Map<string, number>()
+  for (const row of allRecords(value)) {
+    const nestedAbility = isRecord(row.ability) ? row.ability : null
+    const nameValue = nestedAbility?.name ?? row.name
+    if (typeof nameValue !== 'string' || !nameValue || nameValue === actorName || (!nestedAbility && row.guid === undefined && row.abilityGameID === undefined && row.abilityGameId === undefined && row.id === undefined)) continue
+    let count: number | null = null
+    for (const key of ['casts', 'castCount', 'uses', 'count', 'total']) {
+      const candidate = row[key]
+      if (typeof candidate === 'number' && Number.isFinite(candidate)) { count = candidate; break }
+      if (isRecord(candidate) && typeof candidate.casts === 'number') { count = candidate.casts; break }
+    }
+    if (count !== null && count > 0) counts.set(nameValue, (counts.get(nameValue) ?? 0) + count)
+  }
+  return [...counts.entries()].map(([name, count]) => ({ name, count }))
 }
 
 function makePlayerStats(analysis: FightAnalysis): PlayerStats[] {
@@ -183,11 +221,15 @@ function makePlayerStats(analysis: FightAnalysis): PlayerStats[] {
       const friendlyTotals = isRecord(analysis.tables.friendly_damage) ? analysis.tables.friendly_damage : {}
       const castsRow = rowForActor(analysis.tables.casts, actor, 'source')
       const buffRow = rowForActor(analysis.tables.buff_uptimes, actor, 'target')
+      const recentPercentile = rankingPercentile(analysis.rankings?.recent_parses, actor)
+      const bestPercentile = rankingPercentile(analysis.rankings?.best_rankings, actor)
       const actorDeathEvents = deaths.filter((event) => actorId(event, 'target') === actor.id)
       const actorInterrupts = interrupts.filter((event) => actorId(event, 'source') === actor.id)
       const actorCombatant = combatantEvents.find((event) => actorId(event, 'source') === actor.id || actorId(event, 'target') === actor.id)
       const details = allRecords(analysis.player_details).find((record) => Number(record.id ?? record.actorID ?? record.actorId) === actor.id && (Array.isArray(record.gear) || isRecord(record.combatantInfo) || isRecord(record.combatantinfo)))
       const combatantInfo = isRecord(details?.combatantInfo) ? details.combatantInfo : isRecord(details?.combatantinfo) ? details.combatantinfo : actorCombatant
+      const rawSpec = actor.specName ?? details?.specName ?? details?.spec ?? details?.specialization ?? combatantInfo?.spec
+      const specName = typeof rawSpec === 'string' ? rawSpec : isRecord(rawSpec) && typeof rawSpec.name === 'string' ? rawSpec.name : null
       const friendlyDamageValue = friendlyTotals[String(actor.id)]
       const gear = Array.isArray(details?.gear) ? details.gear.filter(isRecord) : Array.isArray(combatantInfo?.gear) ? combatantInfo.gear.filter(isRecord) : []
       const itemLevels = gear.map((item) => numericValue(item, ['itemLevel', 'itemlevel', 'ilevel', 'ilvl'])).filter((level): level is number => level !== null && level > 0)
@@ -207,6 +249,9 @@ function makePlayerStats(analysis: FightAnalysis): PlayerStats[] {
       }).filter((ability, index, rows) => rows.findIndex((item) => item.name === ability.name) === index)
       return {
         ...actor,
+        specName,
+        durationSeconds,
+        casts: spellUses(castsRow, actor.name),
         damage: numericValue(damageRow, ['total', 'amount', 'damage']),
         dps: numericValue(damageRow, ['dps']) ?? (numericValue(damageRow, ['total', 'amount', 'damage']) !== null && durationSeconds > 0 ? (numericValue(damageRow, ['total', 'amount', 'damage']) as number) / durationSeconds : null),
         healing: numericValue(healingRow, ['total', 'amount', 'healing']),
@@ -226,6 +271,8 @@ function makePlayerStats(analysis: FightAnalysis): PlayerStats[] {
         auras,
         uptimes,
         uptimeAverage: uptimes.length && uptimes.every((ability) => ability.percent !== null) ? uptimes.reduce((sum, ability) => sum + (ability.percent ?? 0), 0) / uptimes.length : null,
+        recentPercentile,
+        bestPercentile,
       }
     })
 }
@@ -389,7 +436,7 @@ function ReportPage({ code }: { code: string }) {
             <article className="overview-card composition-card"><span className="overview-icon tint-mint"><Swords size={17} /></span><div><strong>{playerStats.length}</strong><span>Raid roster</span></div><div className="comp-bars">{composition.map(([name, count]) => <span key={name} title={`${name}: ${count}`}><i style={{ width: `${100 * count / Math.max(1, playerStats.length)}%` }} />{name}<b>{count}</b></span>)}</div></article>
           </section>
           <TimelineCard deaths={deathEvents} interrupts={interruptEvents} analysis={analysis.data} />
-          <BenchmarkCard benchmarks={benchmarks.data} isLoading={benchmarks.isLoading} error={benchmarks.error?.message} strictness={benchmarkStrictness} onStrictnessChange={setBenchmarkStrictness} />
+          <BenchmarkCard benchmarks={benchmarks.data} analysis={analysis.data} players={playerStats} isLoading={benchmarks.isLoading} error={benchmarks.error?.message} strictness={benchmarkStrictness} onStrictnessChange={setBenchmarkStrictness} />
           <LearningPlan players={playerStats} deaths={deathEvents} interruptCount={interruptEvents.length} interruptsAvailable={eventDataAvailable(analysis.data.events.interrupts)} deathsAvailable={eventDataAvailable(analysis.data.events.deaths)} />
           <div className="leader-grid">
             <LeaderCard title="Damage" players={metricLeaders('damage')} metric="damage" tint="blue" />
@@ -418,14 +465,94 @@ function ReportPage({ code }: { code: string }) {
 
 function formatMetric(value: number | null): string { return value === null ? '—' : Math.round(value).toLocaleString() }
 
-function BenchmarkCard({ benchmarks, isLoading, error, strictness, onStrictnessChange }: { benchmarks?: Benchmarks; isLoading: boolean; error?: string; strictness: string; onStrictnessChange: (value: string) => void }) {
+function distribution(values: number[]): { count: number; median: number; lowerQuartile: number; upperQuartile: number } | null {
+  if (!values.length) return null
+  const sorted = [...values].sort((a, b) => a - b)
+  const middle = Math.floor(sorted.length / 2)
+  const median = sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2
+  return { count: sorted.length, median, lowerQuartile: sorted[Math.floor((sorted.length - 1) * 0.25)], upperQuartile: sorted[Math.floor((sorted.length - 1) * 0.75)] }
+}
+
+function versusMedian(value: number, baseline: ReturnType<typeof distribution>): string {
+  if (!baseline || baseline.median <= 0) return ''
+  const difference = 100 * (value - baseline.median) / baseline.median
+  return ` · ${difference > 0 ? '+' : ''}${difference.toFixed(0)}% vs median`
+}
+
+function benchmarkPlayerStats(reference: BenchmarkReference): PlayerStats[] {
+  const actors = reference.actors.map((actor) => ({ ...actor, specName: reference.player_specs[String(actor.id)] ?? null }))
+  return makePlayerStats({ ...reference, actors, player_details: reference.player_details ?? null, rankings: { recent_parses: null, best_rankings: null } })
+}
+
+function samePeerGroup(player: PlayerStats, peer: PlayerStats): boolean {
+  if (player.specName && peer.specName) return player.specName === peer.specName
+  return player.subType === peer.subType
+}
+
+function BenchmarkCard({ benchmarks, analysis, players, isLoading, error, strictness, onStrictnessChange }: { benchmarks?: Benchmarks; analysis?: FightAnalysis; players: PlayerStats[]; isLoading: boolean; error?: string; strictness: string; onStrictnessChange: (value: string) => void }) {
+  const references = benchmarks?.reference_analyses ?? []
+  const referencePlayers = references.map((reference) => ({ reference, players: benchmarkPlayerStats(reference) }))
+  const raidDamage = distribution(referencePlayers.map(({ players: rows, reference }) => rows.reduce((total, player) => total + (player.dps ?? 0), 0)).filter((value) => value > 0))
+  const raidHealing = distribution(referencePlayers.map(({ players: rows }) => rows.reduce((total, player) => total + (player.hps ?? 0), 0)).filter((value) => value > 0))
+  const raidTakenRate = distribution(referencePlayers.map(({ players: rows, reference }) => {
+    const duration = reference.fight.duration_ms / 1000
+    return duration > 0 ? rows.reduce((total, player) => total + (player.damageTaken ?? 0), 0) / duration : 0
+  }).filter((value) => value > 0))
+  const selectedRaidDps = players.reduce((total, player) => total + (player.dps ?? 0), 0)
+  const selectedRaidHps = players.reduce((total, player) => total + (player.hps ?? 0), 0)
+  const selectedTakenRate = analysis && analysis.fight.duration_ms > 0 ? players.reduce((total, player) => total + (player.damageTaken ?? 0), 0) / (analysis.fight.duration_ms / 1000) : 0
+  const playerComparisons = players.map((player) => {
+    const peers = referencePlayers.flatMap(({ reference, players: rows }) => rows.filter((peer) => samePeerGroup(player, peer)).map((peer) => ({ peer, reference })))
+    const peerLogCount = new Set(peers.map(({ reference }) => `${reference.report_code}:${reference.fight_id}`)).size
+    const classFallbackLogCount = new Set(peers.filter(({ peer }) => Boolean(player.specName && !peer.specName)).map(({ reference }) => `${reference.report_code}:${reference.fight_id}`)).size
+    const dps = distribution(peers.map(({ peer }) => peer.dps).filter((value): value is number => value !== null))
+    const hps = distribution(peers.map(({ peer }) => peer.hps).filter((value): value is number => value !== null))
+    const damageTaken = distribution(peers.map(({ peer }) => peer.durationSeconds > 0 && peer.damageTaken !== null ? peer.damageTaken / peer.durationSeconds : null).filter((value): value is number => value !== null))
+    const metricFindings = peerLogCount >= 3 ? [
+      ...(dps && player.dps !== null && player.dps < dps.lowerQuartile ? [`DPS is below the reference lower quartile (${formatMetric(player.dps)} vs ${formatMetric(dps.lowerQuartile)}). Review cast choices, active time, and assignment context.`] : []),
+      ...(hps && player.hps !== null && player.hps < hps.lowerQuartile ? [`HPS is below the reference lower quartile (${formatMetric(player.hps)} vs ${formatMetric(hps.lowerQuartile)}). Review healing assignments, casts, and encounter timing.`] : []),
+    ] : []
+    const castFindings = player.casts.flatMap((spell) => {
+      const samples = referencePlayers.flatMap(({ reference, players: rows }) => rows
+        .filter((peer) => samePeerGroup(player, peer))
+        .flatMap((peer) => peer.casts.filter((item) => item.name === spell.name && peer.durationSeconds > 0).map((item) => ({ rate: item.count / peer.durationSeconds * 60, reference }))))
+      const baseline = distribution(samples.map((sample) => sample.rate))
+      const logs = new Set(samples.map((sample) => `${sample.reference.report_code}:${sample.reference.fight_id}`)).size
+      const currentRate = player.durationSeconds > 0 ? spell.count / player.durationSeconds * 60 : null
+      return baseline && currentRate !== null && logs >= 3 && baseline.lowerQuartile > 0 && currentRate < baseline.lowerQuartile * 0.8
+        ? [{ name: spell.name, current: currentRate, baseline: baseline.median, logs }]
+        : []
+    }).slice(0, 3)
+    const uptimeFindings = player.uptimes.flatMap((ability) => {
+      if (ability.percent === null) return []
+      const samples = referencePlayers.flatMap(({ reference, players: rows }) => rows
+        .filter((peer) => samePeerGroup(player, peer))
+        .flatMap((peer) => peer.uptimes.filter((item) => item.name === ability.name && item.percent !== null).map((item) => ({ percent: item.percent as number, reference }))))
+      const baseline = distribution(samples.map((sample) => sample.percent))
+      const logCount = new Set(samples.map((sample) => `${sample.reference.report_code}:${sample.reference.fight_id}`)).size
+      return baseline && logCount >= 3 && ability.percent < baseline.lowerQuartile - 15
+        ? [{ name: ability.name, current: ability.percent, baseline: baseline.median, logs: logCount }]
+        : []
+    })
+    return { player, peers: peers.length, peerLogCount, classFallbackLogCount, dps, hps, damageTaken, uptimeFindings, metricFindings, castFindings }
+  })
+  const deaths = analysis && eventDataComplete(analysis.events.deaths) ? tableRows(analysis.events.deaths).length : null
+  const interrupts = analysis && eventDataComplete(analysis.events.interrupts) ? tableRows(analysis.events.interrupts).length : null
+  const referenceDeaths = referencePlayers.map(({ reference }) => eventDataComplete(reference.events.deaths) ? tableRows(reference.events.deaths).length : null).filter((value): value is number => value !== null)
+  const referenceInterrupts = referencePlayers.map(({ reference }) => eventDataComplete(reference.events.interrupts) ? tableRows(reference.events.interrupts).length : null).filter((value): value is number => value !== null)
+  const deathMedian = distribution(referenceDeaths)
+  const interruptMedian = distribution(referenceInterrupts)
   return <article className="analysis-card benchmark-card">
     <div className="card-heading"><div><h3>Comparable raid logs</h3><p>Public kill logs for this encounter and raid size, filtered by pull duration.</p></div><label className="benchmark-filter">MATCHING<select value={strictness} onChange={(event) => onStrictnessChange(event.target.value)}><option value="strict">Close · ±10%</option><option value="balanced">Balanced · ±20%</option><option value="broad">Broad · any duration</option></select></label></div>
     {isLoading && <p className="analysis-empty">Loading public reference logs…</p>}
     {error && <p className="analysis-empty">Reference logs unavailable: {error}</p>}
     {benchmarks && <>
       <div className="benchmark-meta"><strong>{benchmarks.sample_size}</strong><span>{benchmarks.sample_size === 1 ? 'candidate log' : 'candidate logs'}</span><span className="benchmark-source">{benchmarks.source}</span></div>
-      {benchmarks.candidates.length > 0 ? <div className="benchmark-list">{benchmarks.candidates.map((candidate) => <a href={candidate.url} key={`${candidate.report_code}-${candidate.fight_id}`} target="_blank" rel="noreferrer"><span><strong>{candidate.guild ?? candidate.title ?? candidate.report_code}</strong><small>{candidate.title ?? `Report ${candidate.report_code}`}{candidate.duration_seconds === null ? '' : ` · ${formatDuration(candidate.duration_seconds * 1000)}`}{candidate.composition_similarity === null ? '' : ` · ${(candidate.composition_similarity * 100).toFixed(0)}% class overlap`}{candidate.average_item_level === null ? '' : ` · ilvl ${candidate.average_item_level.toFixed(1)}`}</small></span><span>{candidate.rank_percent === null ? 'OPEN LOG' : `${Number(candidate.rank_percent).toFixed(1)}%`} <ExternalLink size={12} /></span></a>)}</div> : <p className="analysis-empty">{benchmarks.status === 'unavailable' ? benchmarks.limitations[0] : 'No leaderboard logs met this duration filter. Try a broader match.'}</p>}
+      {benchmarks.candidates.length > 0 ? <div className="benchmark-list">{benchmarks.candidates.map((candidate) => { const percentile = Number(candidate.rank_percent); return <a href={candidate.url} key={`${candidate.report_code}-${candidate.fight_id}`} target="_blank" rel="noreferrer"><span><strong>{candidate.guild ?? candidate.title ?? candidate.report_code}</strong><small>{candidate.title ?? `Report ${candidate.report_code}`}{candidate.duration_seconds === null ? '' : ` · ${formatDuration(candidate.duration_seconds * 1000)}`}{candidate.composition_similarity === null ? '' : ` · ${(candidate.composition_similarity * 100).toFixed(0)}% class overlap`}{candidate.average_item_level === null ? '' : ` · ilvl ${candidate.average_item_level.toFixed(1)}`}</small></span><span>{candidate.rank_percent !== null && Number.isFinite(percentile) ? `${percentile.toFixed(1)}%` : 'VIEW LOG'} <ExternalLink size={12} /></span></a>})}</div> : <p className="analysis-empty">{benchmarks.status === 'unavailable' ? benchmarks.limitations[benchmarks.limitations.length - 1] : 'No leaderboard logs met this duration filter. Try a broader match.'}</p>}
+      {references.length > 0 && <>
+        <section className="benchmark-summary"><div className="card-heading"><div><h4>Raid output vs reference kills</h4><p>Per-second totals compared with the median of the matched execution-ranked logs.</p></div><span>{references.length} LOGS</span></div><div className="benchmark-metrics"><div><span>Raid DPS</span><strong>{formatMetric(selectedRaidDps)}</strong><small>reference median {raidDamage ? formatMetric(raidDamage.median) : '—'}{raidDamage ? ` · ${raidDamage.count} logs${versusMedian(selectedRaidDps, raidDamage)}` : ''}</small></div><div><span>Raid HPS</span><strong>{formatMetric(selectedRaidHps)}</strong><small>reference median {raidHealing ? formatMetric(raidHealing.median) : '—'}{raidHealing ? ` · ${raidHealing.count} logs${versusMedian(selectedRaidHps, raidHealing)}` : ''}</small></div><div><span>Damage taken / sec</span><strong>{formatMetric(selectedTakenRate)}</strong><small>reference median {raidTakenRate ? formatMetric(raidTakenRate.median) : '—'}{raidTakenRate ? ` · ${raidTakenRate.count} logs` : ''}</small></div><div><span>Deaths</span><strong>{deaths === null ? '—' : deaths}</strong><small>reference median {deathMedian ? `${deathMedian.median.toFixed(1)} · n=${deathMedian.count}` : '—'}</small></div><div><span>Interrupts landed</span><strong>{interrupts === null ? '—' : interrupts}</strong><small>reference median {interruptMedian ? `${interruptMedian.median.toFixed(1)} · n=${interruptMedian.count}` : '—'}</small></div></div></section>
+        <details className="benchmark-player-comparison"><summary>Compare players with {players.some((player) => player.specName) ? 'matching specializations where available' : 'the same class'} across reference logs</summary><div className="analysis-table-wrap"><table><thead><tr><th>Player</th><th>Peer group</th><th>Pull DPS</th><th>Ref. median</th><th>Peer logs</th><th>Pull HPS</th><th>Ref. median</th><th>Taken/s</th><th>Ref. median</th><th>Review prompt</th></tr></thead><tbody>{playerComparisons.map(({ player, peerLogCount, classFallbackLogCount, dps, hps, damageTaken, metricFindings, uptimeFindings, castFindings }) => { const prompts = [...metricFindings, ...uptimeFindings.map((finding) => `${finding.name} uptime: ${finding.current.toFixed(0)}% vs ${finding.baseline.toFixed(0)}% reference median across ${finding.logs} logs.`), ...castFindings.map((finding) => `${finding.name}: ${finding.current.toFixed(1)} casts/min vs ${finding.baseline.toFixed(1)} median across ${finding.logs} logs; confirm the spell was expected in this role and fight phase.`)]; return <tr key={player.id}><td>{player.name}</td><td>{player.specName ? `${player.subType} · ${player.specName}${classFallbackLogCount ? ` (${classFallbackLogCount} class fallback)` : ''}` : `${player.subType} · class fallback`}</td><td>{formatMetric(player.dps)}</td><td>{dps ? formatMetric(dps.median) : '—'}</td><td>{peerLogCount}</td><td>{formatMetric(player.hps)}</td><td>{hps ? formatMetric(hps.median) : '—'}</td><td>{player.damageTaken === null ? '—' : formatMetric(player.damageTaken / Math.max(.001, player.durationSeconds))}</td><td>{damageTaken ? formatMetric(damageTaken.median) : '—'}</td><td>{prompts.length ? prompts.join(' ') : peerLogCount < 3 ? `Need more ${player.specName ? 'same-specialization' : 'same-class'} reference logs` : 'No clear gap in the available fields'}</td></tr> })}</tbody></table></div><p className="benchmark-caveat">Taken damage is shown as context, not avoidability. Uses same specialization when WCL returns it, otherwise falls back to same class and labels that fallback. Comparisons use a small execution-ranked kill sample. Cast-rate prompts only flag low use in this sample; confirm cooldown availability, role, assignments, mechanics, and kill strategy before drawing conclusions.</p></details>
+      </>}
       <details className="benchmark-notes"><summary>How these logs were matched</summary><p>{benchmarks.match_basis.length ? benchmarks.match_basis.join(' · ') : 'The report is missing fields needed to select a cohort.'}</p>{benchmarks.limitations.map((limitation) => <p key={limitation}>{limitation}</p>)}</details>
     </>}
   </article>
@@ -458,6 +585,7 @@ function LeaderCard({ title, players, metric, tint }: { title: string; players: 
 
 function playerSuggestions(player: PlayerStats): string[] {
   const notes: string[] = []
+  if (player.recentPercentile !== null && player.recentPercentile < 30) notes.push(`This pull is at the ${player.recentPercentile.toFixed(1)}th percentile against Warcraft Logs' recent parses. Review cast choices and uptime alongside the player's role, assignments, and fight timing; the percentile alone does not explain the difference.`)
   if (player.deaths.length) notes.push(`${player.deaths.length} death${player.deaths.length === 1 ? '' : 's'} recorded. Review the final damage events and defensive timing around each death.`)
   if (player.friendlyDamageReliable && (player.friendlyDamage ?? 0) > 0) {
     const ability = [...player.friendlyDamageAbilities].sort((a, b) => b.amount - a.amount)[0]
@@ -475,6 +603,7 @@ function PlayerDetail({ player }: { player: PlayerStats }) {
   const gemItems = player.gear.flatMap((item) => Array.isArray(item.gems) ? item.gems.filter((gem) => gem !== null && gem !== 0 && gem !== '').map((gem) => ({ item, gem })) : [])
   return <details className="player-detail"><summary>Review player</summary><div className="player-detail-content">
     <section><h4>Evidence to review</h4><ul className="suggestion-list">{playerSuggestions(player).map((note) => <li key={note}>{note}</li>)}</ul></section>
+    {(player.recentPercentile !== null || player.bestPercentile !== null) && <section><h4>WCL performance context</h4><p><b>Recent parses:</b> {player.recentPercentile === null ? 'Unavailable' : `${player.recentPercentile.toFixed(1)} percentile`}</p><p><b>Best-score rankings:</b> {player.bestPercentile === null ? 'Unavailable' : `${player.bestPercentile.toFixed(1)} percentile`}</p><p>These percentiles compare this pull against Warcraft Logs rankings, not against this guild's assignments or a fully composition-matched cohort.</p></section>}
     <section><h4>Uptime by ability</h4>{player.uptimes.length ? <ul>{player.uptimes.map((ability) => <li key={ability.name}><span>{ability.name}</span><strong>{ability.percent === null ? '—' : `${ability.percent.toFixed(1)}%`}</strong></li>)}</ul> : <p className="analysis-empty">Player uptime detail not returned for this pull.</p>}</section>
     <section><h4>Itemization</h4><div className="gear-summary"><span>Average item level <b>{player.averageItemLevel === null ? '—' : player.averageItemLevel.toFixed(1)}</b></span><span>Enchants found <b>{player.enchantCount === null ? '—' : player.enchantCount}</b></span><span>Gems found <b>{player.gemCount === null ? '—' : player.gemCount}</b></span></div>
       <details><summary>Enchant details ({enchantItems.length})</summary><ul>{enchantItems.map((item, index) => <li key={index}><span>{String(item.name ?? item.itemName ?? 'Equipped item')}</span><strong>{String(item.permanentEnchantName ?? item.permanentEnchant ?? item.enchantName ?? item.enchant)}</strong></li>)}</ul></details>
@@ -492,7 +621,7 @@ function ClassRoster({ players, deathsAvailable, interruptsAvailable, friendlyDa
     groups.set(name, [...(groups.get(name) ?? []), player])
   }
   return <article className="analysis-card roster-card class-roster"><div className="card-heading"><div><h3>Compare players by class</h3><p>Players in the same class share a row layout for easier pull-to-pull comparison.</p></div><span>{players.length} PLAYERS</span></div>
-          {players.length === 0 ? <p className="analysis-empty">No friendly player roster was returned for this pull.</p> : Array.from(groups.entries()).map(([className, members], index) => <details className="class-group" key={className} open={index === 0}><summary><strong>{className}</strong><span>{members.length} players · sorted by DPS</span></summary><div className="analysis-table-wrap"><table><thead><tr><th>Player</th><th>DPS</th><th>HPS</th><th>Taken</th><th>Friendly dmg</th><th>Deaths</th><th>Kicks</th><th>Buff uptime*</th><th>Avg ilvl</th><th>Enchant</th><th>Gems</th></tr></thead><tbody>{members.map((player) => <tr key={player.id}><td><strong>{player.name}</strong><PlayerDetail player={player} /></td><td>{formatMetric(player.dps)}</td><td>{formatMetric(player.hps)}</td><td>{formatMetric(player.damageTaken)}</td><td>{friendlyDamageComplete ? formatMetric(player.friendlyDamage) : player.friendlyDamage === null ? '—' : `${formatMetric(player.friendlyDamage)}*`}</td><td>{deathsAvailable ? player.deaths.length : '—'}</td><td>{interruptsAvailable ? player.interrupts.length : '—'}</td><td>{player.uptimeAverage === null ? '—' : `${player.uptimeAverage.toFixed(1)}%`}</td><td>{player.averageItemLevel === null ? '—' : player.averageItemLevel.toFixed(1)}</td><td>{player.enchantCount === null ? '—' : player.enchantCount}</td><td>{player.gemCount === null ? '—' : player.gemCount}</td></tr>)}</tbody></table></div></details>)}
+          {players.length === 0 ? <p className="analysis-empty">No friendly player roster was returned for this pull.</p> : Array.from(groups.entries()).map(([className, members], index) => <details className="class-group" key={className} open={index === 0}><summary><strong>{className}</strong><span>{members.length} players · sorted by DPS</span></summary><div className="analysis-table-wrap"><table><thead><tr><th>Player</th><th>DPS</th><th>WCL · recent</th><th>WCL · best</th><th>HPS</th><th>Taken</th><th>Friendly dmg</th><th>Deaths</th><th>Kicks</th><th>Buff uptime*</th><th>Avg ilvl</th><th>Enchant</th><th>Gems</th></tr></thead><tbody>{members.map((player) => <tr key={player.id}><td><strong>{player.name}</strong><PlayerDetail player={player} /></td><td>{formatMetric(player.dps)}</td><td title="Selected pull percentile against parses submitted during the recent two-week window">{player.recentPercentile === null ? '—' : `${player.recentPercentile.toFixed(1)}%`}</td><td title="Selected pull percentile against best-score rankings">{player.bestPercentile === null ? '—' : `${player.bestPercentile.toFixed(1)}%`}</td><td>{formatMetric(player.hps)}</td><td>{formatMetric(player.damageTaken)}</td><td>{friendlyDamageComplete ? formatMetric(player.friendlyDamage) : player.friendlyDamage === null ? '—' : `${formatMetric(player.friendlyDamage)}*`}</td><td>{deathsAvailable ? player.deaths.length : '—'}</td><td>{interruptsAvailable ? player.interrupts.length : '—'}</td><td>{player.uptimeAverage === null ? '—' : `${player.uptimeAverage.toFixed(1)}%`}</td><td>{player.averageItemLevel === null ? '—' : player.averageItemLevel.toFixed(1)}</td><td>{player.enchantCount === null ? '—' : player.enchantCount}</td><td>{player.gemCount === null ? '—' : player.gemCount}</td></tr>)}</tbody></table></div></details>)}
     <p className="data-note">Buff uptime is the average of abilities reported for that player; compare within the same class and assignment, not as a universal benchmark.</p>
     {!friendlyDamageComplete && <p className="data-note">* Friendly damage event data is incomplete or unavailable. A dash means the log did not provide a reliable value.</p>}
   </article>

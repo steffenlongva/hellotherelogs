@@ -38,6 +38,7 @@ def normalize_fight(raw: dict[str, Any]) -> dict[str, Any]:
         "end_time_ms": end_time,
         "duration_ms": max(0.0, end_time - start_time),
         "kill": raw.get("kill"),
+        "average_item_level": raw.get("averageItemLevel") if isinstance(raw.get("averageItemLevel"), (int, float)) else None,
         "fight_percentage": raw.get("fightPercentage"),
         "friendly_players": raw.get("friendlyPlayers") or [],
     }

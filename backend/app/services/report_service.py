@@ -1,3 +1,4 @@
+import asyncio
 import json
 from typing import Any
 
@@ -24,6 +25,7 @@ query HelloThereLogsReport($code: String!) {
         startTime
         endTime
         kill
+        averageItemLevel
         fightPercentage
         friendlyPlayers
       }
@@ -45,6 +47,7 @@ query HelloThereLogsReportFights($code: String!) {
         startTime
         endTime
         kill
+        averageItemLevel
         fightPercentage
         friendlyPlayers
       }
@@ -72,6 +75,8 @@ query HelloThereLogsFightAnalysis($code: String!, $fightId: Int!) {
       interruptEvents: events(dataType: Interrupts, fightIDs: [$fightId], limit: 10000, useActorIDs: true, useAbilityIDs: true) { data nextPageTimestamp }
       combatantInfo: events(dataType: CombatantInfo, fightIDs: [$fightId], limit: 10000, useActorIDs: true, useAbilityIDs: true) { data nextPageTimestamp }
       playerDetails: playerDetails(fightIDs: [$fightId], includeCombatantInfo: true)
+      parseRankings: rankings(compare: Parses, fightIDs: [$fightId])
+      bestRankings: rankings(compare: Rankings, fightIDs: [$fightId])
       __FRIENDLY_DAMAGE_EVENT_FIELDS__
     }
   }
@@ -160,6 +165,18 @@ def _class_counts(value: Any) -> dict[str, int]:
     return counts
 
 
+def _actor_specs(value: Any) -> dict[int, str]:
+    specs: dict[int, str] = {}
+    for record in _records(value):
+        actor_id = record.get("id", record.get("actorID", record.get("actorId")))
+        spec = record.get("specName", record.get("spec", record.get("specialization")))
+        if isinstance(spec, dict):
+            spec = spec.get("name")
+        if isinstance(actor_id, int) and isinstance(spec, str) and spec:
+            specs.setdefault(actor_id, spec)
+    return specs
+
+
 def _average_item_level(value: Any) -> float | None:
     records = _records(value)
     summaries = [
@@ -227,6 +244,30 @@ query HelloThereLogsEncounterBenchmarks($encounterId: Int!, $difficulty: Int!, $
 }
 """
 
+BENCHMARK_REPORT_QUERY = """
+query HelloThereLogsBenchmarkReport($code: String!, $fightId: Int!) {
+  reportData {
+    report(code: $code) {
+      code
+      title
+      fights { id encounterID difficulty name startTime endTime kill averageItemLevel friendlyPlayers }
+      masterData { actors { id name type subType petOwner } }
+      damage: table(dataType: DamageDone, fightIDs: [$fightId], viewBy: Source)
+      healing: table(dataType: Healing, fightIDs: [$fightId], viewBy: Source)
+      damageTaken: table(dataType: DamageTaken, fightIDs: [$fightId], viewBy: Target)
+      casts: table(dataType: Casts, fightIDs: [$fightId], viewBy: Source)
+      interrupts: table(dataType: Interrupts, fightIDs: [$fightId], viewBy: Source)
+      buffUptimes: table(dataType: Buffs, fightIDs: [$fightId], viewBy: Target)
+      abilityUptimes: table(dataType: Buffs, fightIDs: [$fightId], viewBy: Ability)
+      debuffUptimes: table(dataType: Debuffs, fightIDs: [$fightId], viewBy: Ability)
+      deaths: events(dataType: Deaths, fightIDs: [$fightId], limit: 1000, useActorIDs: true, useAbilityIDs: true) { data nextPageTimestamp }
+      interruptEvents: events(dataType: Interrupts, fightIDs: [$fightId], limit: 1000, useActorIDs: true, useAbilityIDs: true) { data nextPageTimestamp }
+      playerDetails: playerDetails(fightIDs: [$fightId], includeCombatantInfo: true)
+    }
+  }
+}
+"""
+
 
 class ReportService:
     def __init__(self, client: WCLClient, cache: SQLiteCache):
@@ -242,18 +283,18 @@ class ReportService:
         return report
 
     async def get_report(self, code: str) -> dict[str, Any]:
-        cache_key = f"report:v2:{code}"
+        cache_key = f"report:v3:{code}"
         cached = self.cache.get(cache_key)
         if cached is not None:
             return cached
         data = await self.client.query(REPORT_QUERY, {"code": code})
         normalized = normalize_report(self._report_from_response(data))
         self.cache.set(cache_key, normalized)
-        self.cache.set(f"fights:v2:{code}", normalized["fights"])
+        self.cache.set(f"fights:v3:{code}", normalized["fights"])
         return normalized
 
     async def get_fights(self, code: str) -> list[dict[str, Any]]:
-        cache_key = f"fights:v2:{code}"
+        cache_key = f"fights:v3:{code}"
         cached = self.cache.get(cache_key)
         if cached is not None:
             return cached
@@ -268,7 +309,7 @@ class ReportService:
         fight = next((item for item in report["fights"] if item["fight_id"] == fight_id), None)
         if fight is None:
             raise ReportNotFoundError("Fight was not found in this report.")
-        cache_key = f"analysis:v4:{code}:{fight_id}"
+        cache_key = f"analysis:v5:{code}:{fight_id}"
         cached = self.cache.get(cache_key)
         if cached is not None:
             return cached
@@ -335,10 +376,61 @@ class ReportService:
                 "combatant_info": raw_report.get("combatantInfo"),
             },
             "player_details": raw_report.get("playerDetails"),
+            "rankings": {
+                "recent_parses": raw_report.get("parseRankings"),
+                "best_rankings": raw_report.get("bestRankings"),
+            },
             "actors": participant_actors,
         }
         self.cache.set(cache_key, result)
         return result
+
+    async def _get_benchmark_report(self, candidate: dict[str, Any], target_encounter_id: int, target_difficulty: int, target_size: int) -> dict[str, Any] | None:
+        data = await self.client.query(BENCHMARK_REPORT_QUERY, {
+            "code": candidate["report_code"],
+            "fightId": candidate["fight_id"],
+        })
+        raw_report = self._report_from_response(data)
+        raw_fight = next((
+            row for row in (raw_report.get("fights") or [])
+            if isinstance(row, dict) and row.get("id") == candidate["fight_id"]
+        ), None)
+        if not isinstance(raw_fight, dict):
+            return None
+        normalized_fight = normalize_fight(raw_fight)
+        if (
+            normalized_fight["encounter_id"] != target_encounter_id
+            or normalized_fight.get("difficulty") != target_difficulty
+            or len(normalized_fight.get("friendly_players") or []) != target_size
+        ):
+            return None
+        participant_ids = set(normalized_fight.get("friendly_players") or [])
+        actors = [
+            actor for actor in ((raw_report.get("masterData") or {}).get("actors") or [])
+            if isinstance(actor, dict) and actor.get("id") in participant_ids and actor.get("type") == "Player"
+        ]
+        return {
+            "report_code": candidate["report_code"],
+            "fight_id": candidate["fight_id"],
+            "title": raw_report.get("title"),
+            "fight": normalized_fight,
+            "actors": actors,
+            "tables": {
+                "damage": raw_report.get("damage"),
+                "healing": raw_report.get("healing"),
+                "damage_taken": raw_report.get("damageTaken"),
+                "casts": raw_report.get("casts"),
+                "interrupts": raw_report.get("interrupts"),
+                "buff_uptimes": raw_report.get("buffUptimes"),
+                "ability_uptimes": raw_report.get("abilityUptimes"),
+                "debuff_uptimes": raw_report.get("debuffUptimes"),
+            },
+            "events": {
+                "deaths": raw_report.get("deaths"),
+                "interrupts": raw_report.get("interruptEvents"),
+            },
+            "player_details": raw_report.get("playerDetails"),
+        }
 
     async def get_benchmarks(self, code: str, fight_id: int, strictness: str = "balanced") -> dict[str, Any]:
         """Return public encounter logs matched by raid size and pull duration."""
@@ -353,7 +445,7 @@ class ReportService:
         if fight["encounter_id"] <= 0 or not isinstance(difficulty, int) or roster_size <= 0:
             return _unavailable_benchmarks(fight, strictness, "This pull is missing encounter, difficulty, or roster-size data.")
 
-        cache_key = f"benchmarks:v1:{code}:{fight_id}:{strictness}"
+        cache_key = f"benchmarks:v2:{code}:{fight_id}:{strictness}"
         cached = self.cache.get(cache_key)
         if cached is not None:
             return cached
@@ -372,30 +464,58 @@ class ReportService:
         duration_tolerance = {"strict": 0.10, "balanced": 0.20, "broad": None}[strictness]
         analysis = await self.get_fight_analysis(code, fight_id)
         target_classes = _class_counts(analysis.get("actors", []))
-        target_ilvl = _average_item_level(analysis.get("player_details"))
+        if sum(target_classes.values()) != roster_size:
+            target_classes = {}
+        target_ilvl = fight.get("average_item_level") or _average_item_level(analysis.get("player_details"))
         composition_floor = {"strict": 0.80, "balanced": 0.60, "broad": None}[strictness]
         item_level_tolerance = {"strict": 3.0, "balanced": 6.0, "broad": None}[strictness]
-        candidates = []
+        candidate_rows = []
+        seen_candidates: set[tuple[str, int]] = set()
         for row in rows:
             candidate = _ranking_candidate(row)
             if candidate is None:
                 continue
-            if duration_tolerance is not None and candidate["duration_seconds"] is None:
+            key = (candidate["report_code"], candidate["fight_id"])
+            if key in seen_candidates:
                 continue
-            if duration_tolerance is not None:
+            seen_candidates.add(key)
+            if duration_tolerance is not None and candidate["duration_seconds"] is not None:
                 difference = abs(candidate["duration_seconds"] - duration_seconds) / max(1, duration_seconds)
                 if difference > duration_tolerance:
                     continue
-            candidate_classes = _class_counts(row)
-            if composition_floor is not None and target_classes and not candidate_classes:
+            candidate_rows.append(candidate)
+            if len(candidate_rows) >= 5:
+                break
+
+        loaded = await asyncio.gather(*(
+            self._get_benchmark_report(candidate, fight["encounter_id"], difficulty, roster_size)
+            for candidate in candidate_rows
+        ), return_exceptions=True)
+        candidates = []
+        reference_analyses = []
+        failed_reports = sum(isinstance(reference, Exception) for reference in loaded)
+        for candidate, reference in zip(candidate_rows, loaded):
+            if isinstance(reference, Exception):
+                continue
+            if reference is None:
+                continue
+            reference_fight = reference["fight"]
+            candidate_duration = reference_fight["duration_ms"] / 1000
+            candidate["duration_seconds"] = candidate_duration
+            if duration_tolerance is not None:
+                duration_difference = abs(candidate_duration - duration_seconds) / max(1, duration_seconds)
+                if duration_difference > duration_tolerance:
+                    continue
+            candidate_classes = _class_counts(reference["actors"])
+            if composition_floor is not None and target_classes and sum(candidate_classes.values()) != roster_size:
                 continue
             if composition_floor is not None and target_classes and candidate_classes:
                 overlap = sum(min(count, candidate_classes.get(name, 0)) for name, count in target_classes.items())
-                similarity = overlap / max(1, sum(target_classes.values()))
+                similarity = overlap / max(1, sum(target_classes.values()), sum(candidate_classes.values()))
                 if similarity < composition_floor:
                     continue
                 candidate["composition_similarity"] = round(similarity, 3)
-            candidate_ilvl = _average_item_level(row)
+            candidate_ilvl = reference_fight.get("average_item_level") or _average_item_level(reference.get("player_details"))
             if item_level_tolerance is not None and target_ilvl is not None and candidate_ilvl is None:
                 continue
             if candidate_ilvl is not None:
@@ -405,10 +525,20 @@ class ReportService:
                     if item_level_tolerance is not None and abs(item_level_difference) > item_level_tolerance:
                         continue
                     candidate["item_level_difference"] = round(item_level_difference, 1)
+            actor_specs = _actor_specs(reference.get("player_details"))
+            reference["player_specs"] = {str(actor_id): spec for actor_id, spec in actor_specs.items() if actor_id in {actor["id"] for actor in reference["actors"]}}
+            reference.pop("player_details", None)
+            reference_analyses.append(reference)
             candidates.append(candidate)
-        candidates = candidates[:50]
+        limitations = [
+            "Reference reports are drawn from WCL's execution-ranked kills, so this cohort is aspirational and not a typical-performance baseline.",
+            "Cross-log player comparisons use class when specialization is absent; role and assignment differences can still matter.",
+            "This is a reference cohort, not a player grade; assignments and encounter context still matter.",
+        ]
+        if failed_reports:
+            limitations.append(f"{failed_reports} leaderboard report(s) could not be loaded for detailed comparison.")
         result = {
-            "status": "available" if candidates else "empty",
+            "status": "available" if candidates else "unavailable" if failed_reports else "empty",
             "encounter": encounter.get("name") or fight["name"],
             "strictness": strictness,
             "source": "Warcraft Logs execution leaderboard",
@@ -419,16 +549,12 @@ class ReportService:
                 f"same raid size ({roster_size})",
                 "kill leaderboard records",
                 f"pull duration within {int(duration_tolerance * 100)}%" if duration_tolerance is not None else "duration not filtered",
-                f"class composition overlap ≥ {int(composition_floor * 100)}% when WCL returns it" if composition_floor is not None else "class composition not filtered",
-                f"average item level within ±{item_level_tolerance:.0f} when WCL returns it" if item_level_tolerance is not None else "item level not filtered",
+                f"class composition overlap ≥ {int(composition_floor * 100)}%" if composition_floor is not None and target_classes else "class composition not filtered",
+                f"average item level within ±{item_level_tolerance:.0f}" if item_level_tolerance is not None and target_ilvl is not None else "item level not filtered",
             ],
-            "limitations": [
-                "The public leaderboard is execution-ranked and may favor exceptional logs over typical raid performance.",
-                "Player specialization is not consistently present in the public fight leaderboard response.",
-                "Composition and item level filters are applied only when Warcraft Logs includes those fields; otherwise they are shown as unavailable.",
-                "This is a reference cohort, not a player grade; assignments and encounter context still matter.",
-            ],
+            "limitations": limitations,
             "candidates": candidates,
+            "reference_analyses": reference_analyses,
         }
         self.cache.set(cache_key, result)
         return result
