@@ -485,9 +485,16 @@ function benchmarkPlayerStats(reference: BenchmarkReference): PlayerStats[] {
   return makePlayerStats({ ...reference, actors, player_details: reference.player_details ?? null, rankings: { recent_parses: null, best_rankings: null } })
 }
 
-function samePeerGroup(player: PlayerStats, peer: PlayerStats): boolean {
-  if (player.specName && peer.specName) return player.specName === peer.specName
-  return player.subType === peer.subType
+function peersForLog(player: PlayerStats, peers: PlayerStats[]): { players: PlayerStats[]; classFallback: boolean } {
+  const sameClass = peers.filter((peer) => peer.subType === player.subType)
+  if (!player.specName) return { players: sameClass, classFallback: false }
+  const sameSpec = sameClass.filter((peer) => peer.specName === player.specName)
+  if (sameSpec.length) return { players: sameSpec, classFallback: false }
+  return { players: sameClass.filter((peer) => !peer.specName), classFallback: true }
+}
+
+function mean(values: number[]): number | null {
+  return values.length ? values.reduce((total, value) => total + value, 0) / values.length : null
 }
 
 function BenchmarkCard({ benchmarks, analysis, players, isLoading, error, strictness, onStrictnessChange, source, onSourceChange }: { benchmarks?: Benchmarks; analysis?: FightAnalysis; players: PlayerStats[]; isLoading: boolean; error?: string; strictness: string; onStrictnessChange: (value: string) => void; source: string; onSourceChange: (value: string) => void }) {
@@ -503,22 +510,30 @@ function BenchmarkCard({ benchmarks, analysis, players, isLoading, error, strict
   const selectedRaidHps = players.reduce((total, player) => total + (player.hps ?? 0), 0)
   const selectedTakenRate = analysis && analysis.fight.duration_ms > 0 ? players.reduce((total, player) => total + (player.damageTaken ?? 0), 0) / (analysis.fight.duration_ms / 1000) : 0
   const playerComparisons = players.map((player) => {
-    const peers = referencePlayers.flatMap(({ reference, players: rows }) => rows.filter((peer) => samePeerGroup(player, peer)).map((peer) => ({ peer, reference })))
-    const peerLogCount = new Set(peers.map(({ reference }) => `${reference.report_code}:${reference.fight_id}`)).size
-    const classFallbackLogCount = new Set(peers.filter(({ peer }) => Boolean(player.specName && !peer.specName)).map(({ reference }) => `${reference.report_code}:${reference.fight_id}`)).size
-    const dps = distribution(peers.map(({ peer }) => peer.dps).filter((value): value is number => value !== null))
-    const hps = distribution(peers.map(({ peer }) => peer.hps).filter((value): value is number => value !== null))
-    const damageTaken = distribution(peers.map(({ peer }) => peer.durationSeconds > 0 && peer.damageTaken !== null ? peer.damageTaken / peer.durationSeconds : null).filter((value): value is number => value !== null))
+    const peerGroups = referencePlayers.map(({ reference, players: rows }) => ({ reference, ...peersForLog(player, rows) })).filter((group) => group.players.length > 0)
+    const peerLogCount = peerGroups.length
+    const classFallbackLogCount = peerGroups.filter((group) => group.classFallback).length
+    const valuesPerLog = (select: (peer: PlayerStats) => number | null) => peerGroups.flatMap((group) => {
+      const value = mean(group.players.map(select).filter((item): item is number => item !== null))
+      return value === null ? [] : [value]
+    })
+    const dps = distribution(valuesPerLog((peer) => peer.dps))
+    const hps = distribution(valuesPerLog((peer) => peer.hps))
+    const damageTaken = distribution(valuesPerLog((peer) => peer.durationSeconds > 0 && peer.damageTaken !== null ? peer.damageTaken / peer.durationSeconds : null))
     const metricFindings = peerLogCount >= 3 ? [
       ...(dps && player.dps !== null && player.dps < dps.lowerQuartile ? [`DPS is below the reference lower quartile (${formatMetric(player.dps)} vs ${formatMetric(dps.lowerQuartile)}). Review cast choices, active time, and assignment context.`] : []),
       ...(hps && player.hps !== null && player.hps < hps.lowerQuartile ? [`HPS is below the reference lower quartile (${formatMetric(player.hps)} vs ${formatMetric(hps.lowerQuartile)}). Review healing assignments, casts, and encounter timing.`] : []),
     ] : []
     const castFindings = player.casts.flatMap((spell) => {
-      const samples = referencePlayers.flatMap(({ reference, players: rows }) => rows
-        .filter((peer) => samePeerGroup(player, peer))
-        .flatMap((peer) => peer.casts.filter((item) => item.name === spell.name && peer.durationSeconds > 0).map((item) => ({ rate: item.count / peer.durationSeconds * 60, reference }))))
-      const baseline = distribution(samples.map((sample) => sample.rate))
-      const logs = new Set(samples.map((sample) => `${sample.reference.report_code}:${sample.reference.fight_id}`)).size
+      const samples = peerGroups.flatMap((group) => {
+        const rates = group.players.flatMap((peer) => peer.durationSeconds > 0
+          ? peer.casts.filter((item) => item.name === spell.name).map((item) => item.count / peer.durationSeconds * 60)
+          : [])
+        const rate = mean(rates)
+        return rate === null ? [] : [rate]
+      })
+      const baseline = distribution(samples)
+      const logs = samples.length
       const currentRate = player.durationSeconds > 0 ? spell.count / player.durationSeconds * 60 : null
       return baseline && currentRate !== null && logs >= 3 && baseline.lowerQuartile > 0 && currentRate < baseline.lowerQuartile * 0.8
         ? [{ name: spell.name, current: currentRate, baseline: baseline.median, logs }]
@@ -526,16 +541,20 @@ function BenchmarkCard({ benchmarks, analysis, players, isLoading, error, strict
     }).slice(0, 3)
     const uptimeFindings = player.uptimes.flatMap((ability) => {
       if (ability.percent === null) return []
-      const samples = referencePlayers.flatMap(({ reference, players: rows }) => rows
-        .filter((peer) => samePeerGroup(player, peer))
-        .flatMap((peer) => peer.uptimes.filter((item) => item.name === ability.name && item.percent !== null).map((item) => ({ percent: item.percent as number, reference }))))
-      const baseline = distribution(samples.map((sample) => sample.percent))
-      const logCount = new Set(samples.map((sample) => `${sample.reference.report_code}:${sample.reference.fight_id}`)).size
+      const samples = peerGroups.flatMap((group) => {
+        const percentages = group.players.flatMap((peer) => peer.uptimes
+          .filter((item) => item.name === ability.name && item.percent !== null)
+          .map((item) => item.percent as number))
+        const percent = mean(percentages)
+        return percent === null ? [] : [percent]
+      })
+      const baseline = distribution(samples)
+      const logCount = samples.length
       return baseline && logCount >= 3 && ability.percent < baseline.lowerQuartile - 15
         ? [{ name: ability.name, current: ability.percent, baseline: baseline.median, logs: logCount }]
         : []
     })
-    return { player, peers: peers.length, peerLogCount, classFallbackLogCount, dps, hps, damageTaken, uptimeFindings, metricFindings, castFindings }
+    return { player, peerLogCount, classFallbackLogCount, dps, hps, damageTaken, uptimeFindings, metricFindings, castFindings }
   })
   const deaths = analysis && eventDataComplete(analysis.events.deaths) ? tableRows(analysis.events.deaths).length : null
   const interrupts = analysis && eventDataComplete(analysis.events.interrupts) ? tableRows(analysis.events.interrupts).length : null
@@ -543,6 +562,13 @@ function BenchmarkCard({ benchmarks, analysis, players, isLoading, error, strict
   const referenceInterrupts = referencePlayers.map(({ reference }) => eventDataComplete(reference.events.interrupts) ? tableRows(reference.events.interrupts).length : null).filter((value): value is number => value !== null)
   const deathMedian = distribution(referenceDeaths)
   const interruptMedian = distribution(referenceInterrupts)
+  const raidReviewPrompts = references.length >= 3 ? [
+    ...(raidDamage && selectedRaidDps < raidDamage.lowerQuartile ? [`Raid DPS is below the lower quartile of ${raidDamage.count} matched kills. Review active damage time, target swaps, and phase assignments.`] : []),
+    ...(raidHealing && selectedRaidHps < raidHealing.lowerQuartile ? [`Raid HPS is below the lower quartile of ${raidHealing.count} matched kills. Review healing coverage and cooldown assignments alongside incoming damage.`] : []),
+    ...(raidTakenRate && selectedTakenRate > raidTakenRate.upperQuartile ? [`Raid damage taken is above the upper quartile of ${raidTakenRate.count} matched kills. Review the damage timeline against encounter mechanics; this comparison cannot determine avoidability.`] : []),
+    ...(deaths !== null && deathMedian && deaths > deathMedian.upperQuartile ? [`This pull has more deaths than the upper quartile of ${deathMedian.count} matched kills. Review each death with its mechanic and assignment context.`] : []),
+    ...(interrupts !== null && interruptMedian && interrupts < interruptMedian.lowerQuartile ? [`Fewer interrupts landed than the lower quartile of ${interruptMedian.count} matched kills. Check the dangerous cast timeline and kick assignments; landed counts alone cannot show missed opportunities.`] : []),
+  ] : []
   return <article className="analysis-card benchmark-card">
     <div className="card-heading"><div><h3>Comparable raid logs</h3><p>{source === 'recent' ? 'Recent two-week parses from this roster, matched by specialization where possible.' : 'Public execution-ranked kills for this encounter and raid size.'}</p></div><div className="benchmark-controls"><label className="benchmark-filter">COHORT<select value={source} onChange={(event) => onSourceChange(event.target.value)}><option value="recent">Recent peer parses</option><option value="execution">Top execution kills</option></select></label><label className="benchmark-filter">MATCHING<select value={strictness} onChange={(event) => onStrictnessChange(event.target.value)}><option value="strict">Close · ±10%</option><option value="balanced">Balanced · ±20%</option><option value="broad">Broad · any duration</option></select></label></div></div>
     {isLoading && <p className="analysis-empty">Loading public reference logs…</p>}
@@ -552,6 +578,7 @@ function BenchmarkCard({ benchmarks, analysis, players, isLoading, error, strict
       {benchmarks.candidates.length > 0 ? <div className="benchmark-list">{benchmarks.candidates.map((candidate) => { const percentile = Number(candidate.rank_percent); return <a href={candidate.url} key={`${candidate.report_code}-${candidate.fight_id}`} target="_blank" rel="noreferrer"><span><strong>{candidate.guild ?? candidate.title ?? candidate.report_code}</strong><small>{candidate.title ?? `Report ${candidate.report_code}`}{candidate.duration_seconds === null ? '' : ` · ${formatDuration(candidate.duration_seconds * 1000)}`}{candidate.composition_similarity === null ? '' : ` · ${(candidate.composition_similarity * 100).toFixed(0)}% class overlap`}{candidate.average_item_level === null ? '' : ` · ilvl ${candidate.average_item_level.toFixed(1)}`}{candidate.matched_specs?.length ? ` · surfaced by ${candidate.matched_specs.join(', ')}` : ''}</small></span><span>{candidate.rank_percent !== null && Number.isFinite(percentile) ? `${percentile.toFixed(1)}%` : 'VIEW LOG'} <ExternalLink size={12} /></span></a>})}</div> : <p className="analysis-empty">{benchmarks.status === 'unavailable' ? benchmarks.limitations[benchmarks.limitations.length - 1] : 'No reference logs met these matching criteria. Try a broader match.'}</p>}
       {references.length > 0 && <>
         <section className="benchmark-summary"><div className="card-heading"><div><h4>Raid output vs matched reference logs</h4><p>Per-second totals compared with the median of the selected cohort.</p></div><span>{references.length} LOGS</span></div><div className="benchmark-metrics"><div><span>Raid DPS</span><strong>{formatMetric(selectedRaidDps)}</strong><small>reference median {raidDamage ? formatMetric(raidDamage.median) : '—'}{raidDamage ? ` · ${raidDamage.count} logs${versusMedian(selectedRaidDps, raidDamage)}` : ''}</small></div><div><span>Raid HPS</span><strong>{formatMetric(selectedRaidHps)}</strong><small>reference median {raidHealing ? formatMetric(raidHealing.median) : '—'}{raidHealing ? ` · ${raidHealing.count} logs${versusMedian(selectedRaidHps, raidHealing)}` : ''}</small></div><div><span>Damage taken / sec</span><strong>{formatMetric(selectedTakenRate)}</strong><small>reference median {raidTakenRate ? formatMetric(raidTakenRate.median) : '—'}{raidTakenRate ? ` · ${raidTakenRate.count} logs` : ''}</small></div><div><span>Deaths</span><strong>{deaths === null ? '—' : deaths}</strong><small>reference median {deathMedian ? `${deathMedian.median.toFixed(1)} · n=${deathMedian.count}` : '—'}</small></div><div><span>Interrupts landed</span><strong>{interrupts === null ? '—' : interrupts}</strong><small>reference median {interruptMedian ? `${interruptMedian.median.toFixed(1)} · n=${interruptMedian.count}` : '—'}</small></div></div></section>
+        {raidReviewPrompts.length > 0 && <aside className="benchmark-highlights"><strong>Differences to review</strong><ul>{raidReviewPrompts.map((prompt) => <li key={prompt}>{prompt}</li>)}</ul><small>Prompts appear only when at least three reference kills are available. They point to evidence for review and do not assign fault.</small></aside>}
         <details className="benchmark-player-comparison"><summary>Compare players with {players.some((player) => player.specName) ? 'matching specializations where available' : 'the same class'} across reference logs</summary><div className="analysis-table-wrap"><table><thead><tr><th>Player</th><th>Peer group</th><th>Pull DPS</th><th>Ref. median</th><th>Peer logs</th><th>Pull HPS</th><th>Ref. median</th><th>Taken/s</th><th>Ref. median</th><th>Review prompt</th></tr></thead><tbody>{playerComparisons.map(({ player, peerLogCount, classFallbackLogCount, dps, hps, damageTaken, metricFindings, uptimeFindings, castFindings }) => { const prompts = [...metricFindings, ...uptimeFindings.map((finding) => `${finding.name} uptime: ${finding.current.toFixed(0)}% vs ${finding.baseline.toFixed(0)}% reference median across ${finding.logs} logs.`), ...castFindings.map((finding) => `${finding.name}: ${finding.current.toFixed(1)} casts/min vs ${finding.baseline.toFixed(1)} median across ${finding.logs} logs; confirm the spell was expected in this role and fight phase.`)]; return <tr key={player.id}><td>{player.name}</td><td>{player.specName ? `${player.subType} · ${player.specName}${classFallbackLogCount ? ` (${classFallbackLogCount} class fallback)` : ''}` : `${player.subType} · class fallback`}</td><td>{formatMetric(player.dps)}</td><td>{dps ? formatMetric(dps.median) : '—'}</td><td>{peerLogCount}</td><td>{formatMetric(player.hps)}</td><td>{hps ? formatMetric(hps.median) : '—'}</td><td>{player.damageTaken === null ? '—' : formatMetric(player.damageTaken / Math.max(.001, player.durationSeconds))}</td><td>{damageTaken ? formatMetric(damageTaken.median) : '—'}</td><td>{prompts.length ? prompts.join(' ') : peerLogCount < 3 ? `Need more ${player.specName ? 'same-specialization' : 'same-class'} reference logs` : 'No clear gap in the available fields'}</td></tr> })}</tbody></table></div><p className="benchmark-caveat">Taken damage is shown as context, not avoidability. Uses same specialization when WCL returns it, otherwise falls back to same class and labels that fallback. {source === 'recent' ? 'Recent references come from this roster’s two-week character parses.' : 'Comparisons use execution-ranked kills.'} Cast-rate prompts only flag low use in this sample; confirm cooldown availability, role, assignments, mechanics, and kill strategy before drawing conclusions.</p></details>
       </>}
       <details className="benchmark-notes"><summary>How these logs were matched</summary><p>{benchmarks.match_basis.length ? benchmarks.match_basis.join(' · ') : 'The report is missing fields needed to select a cohort.'}</p>{benchmarks.limitations.map((limitation) => <p key={limitation}>{limitation}</p>)}</details>
