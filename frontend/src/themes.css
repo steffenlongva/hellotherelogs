@@ -12,27 +12,27 @@ body[data-theme='hellothere'] {
 }
 
 body[data-theme='oiler'] {
-  background: #e7f0ec;
-  color: #29413f;
-  --theme-surface: #f6faf7;
-  --theme-raised: #dcebe5;
-  --theme-border: #b9cec6;
-  --theme-text: #29413f;
-  --theme-muted: #627c77;
-  --theme-accent: #477f76;
-  --theme-accent-cool: #c68178;
+  background: #101a25;
+  color: #e5e9e9;
+  --theme-surface: #172431;
+  --theme-raised: #223342;
+  --theme-border: #405362;
+  --theme-text: #edf0ed;
+  --theme-muted: #aebdc2;
+  --theme-accent: #d9827b;
+  --theme-accent-cool: #8bb9d5;
 }
 
 body[data-theme='freedom'] {
-  background: #001e70;
+  background: #071b4c;
   color: #fff;
-  --theme-surface: #fff;
-  --theme-raised: #fff000;
-  --theme-border: #ff2638;
-  --theme-text: #071b51;
-  --theme-muted: #253d76;
-  --theme-accent: #ef142d;
-  --theme-accent-cool: #003bbd;
+  --theme-surface: #f8faff;
+  --theme-raised: #dce7ff;
+  --theme-border: #e63946;
+  --theme-text: #071b4c;
+  --theme-muted: #29477b;
+  --theme-accent: #d90429;
+  --theme-accent-cool: #1455b8;
 }
 
 body[data-theme='hellothere'] .topbar,
@@ -94,12 +94,12 @@ body[data-theme='freedom'] :is(.step, .leader-more summary, .player-detail summa
 
 body[data-theme='hellothere'] .input-row button { background: var(--theme-accent); border-color: var(--theme-accent); color: #17120a; }
 body[data-theme='oiler'] .input-row button { background: var(--theme-accent); border-color: var(--theme-accent); color: #fff; }
-body[data-theme='freedom'] .input-row button { background: #ef142d; border: 3px solid #fff000; color: #fff; box-shadow: 3px 3px 0 #003bbd; }
+body[data-theme='freedom'] .input-row button { background: #d90429; border: 3px solid #fff; color: #fff; box-shadow: 3px 3px 0 #1455b8; }
 body[data-theme='freedom'] :is(.boss-row, .analysis-section, .analysis-card, .local-analysis-section) { border-width: 2px; }
 body[data-theme='freedom'] .class-group > summary { text-transform: uppercase; font-weight: 800; }
-body[data-theme='freedom'] .learning-loop { background: #fff000; border-color: #ef142d; color: #071b51; }
-body[data-theme='freedom'] .learning-loop strong { color: #ef142d; }
+body[data-theme='freedom'] .learning-loop { background: #dce7ff; border-color: #d90429; color: #071b4c; }
+body[data-theme='freedom'] .learning-loop strong { color: #d90429; }
 
 body[data-theme='hellothere'] :is(.timeline-track, .boss-cast-track > div, .local-death-track > div) { background-color: #1a2940; border-color: #34445e; }
-body[data-theme='oiler'] :is(.timeline-track, .boss-cast-track > div, .local-death-track > div) { background-color: #dcebe5; border-color: #b9cec6; }
-body[data-theme='freedom'] :is(.timeline-track, .boss-cast-track > div, .local-death-track > div) { background-color: #fff000; border-color: #ef142d; }
+body[data-theme='oiler'] :is(.timeline-track, .boss-cast-track > div, .local-death-track > div) { background-color: #223342; border-color: #405362; }
+body[data-theme='freedom'] :is(.timeline-track, .boss-cast-track > div, .local-death-track > div) { background-color: #dce7ff; border-color: #d90429; }
