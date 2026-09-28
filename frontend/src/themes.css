@@ -1,0 +1,105 @@
+/* Extra palettes share the same app structure and persist through the existing theme picker. */
+body[data-theme='hellothere'] {
+  background: #080d18;
+  color: #e8e3d5;
+  --theme-surface: #101827;
+  --theme-raised: #1a2940;
+  --theme-border: #34445e;
+  --theme-text: #eee8d8;
+  --theme-muted: #aab6c8;
+  --theme-accent: #f2c14e;
+  --theme-accent-cool: #69d8cf;
+}
+
+body[data-theme='oiler'] {
+  background: #e7f0ec;
+  color: #29413f;
+  --theme-surface: #f6faf7;
+  --theme-raised: #dcebe5;
+  --theme-border: #b9cec6;
+  --theme-text: #29413f;
+  --theme-muted: #627c77;
+  --theme-accent: #477f76;
+  --theme-accent-cool: #c68178;
+}
+
+body[data-theme='freedom'] {
+  background: #001e70;
+  color: #fff;
+  --theme-surface: #fff;
+  --theme-raised: #fff000;
+  --theme-border: #ff2638;
+  --theme-text: #071b51;
+  --theme-muted: #253d76;
+  --theme-accent: #ef142d;
+  --theme-accent-cool: #003bbd;
+}
+
+body[data-theme='hellothere'] .topbar,
+body[data-theme='oiler'] .topbar,
+body[data-theme='freedom'] .topbar,
+body[data-theme='hellothere'] :is(.connect-panel, .empty-state, .stat-card, .progression-section, .fight-log, .analysis-section, .local-log-panel, .loading-panel, .error-panel),
+body[data-theme='oiler'] :is(.connect-panel, .empty-state, .stat-card, .progression-section, .fight-log, .analysis-section, .local-log-panel, .loading-panel, .error-panel),
+body[data-theme='freedom'] :is(.connect-panel, .empty-state, .stat-card, .progression-section, .fight-log, .analysis-section, .local-log-panel, .loading-panel, .error-panel),
+body[data-theme='hellothere'] :is(.analysis-card, .leader-card, .overview-card, .learning-plan, .equipment-player, .local-analysis-section),
+body[data-theme='oiler'] :is(.analysis-card, .leader-card, .overview-card, .learning-plan, .equipment-player, .local-analysis-section),
+body[data-theme='freedom'] :is(.analysis-card, .leader-card, .overview-card, .learning-plan, .equipment-player, .local-analysis-section) {
+  background: var(--theme-surface);
+  border-color: var(--theme-border);
+}
+
+body[data-theme='hellothere'] :is(.class-group > summary, .learning-card, .review-notes, .player-detail-content, .boss-guide-summary > div, .guide-ability, .local-debuff-bucket, .local-compare),
+body[data-theme='oiler'] :is(.class-group > summary, .learning-card, .review-notes, .player-detail-content, .boss-guide-summary > div, .guide-ability, .local-debuff-bucket, .local-compare),
+body[data-theme='freedom'] :is(.class-group > summary, .learning-card, .review-notes, .player-detail-content, .boss-guide-summary > div, .guide-ability, .local-debuff-bucket, .local-compare) {
+  background: var(--theme-raised);
+  border-color: var(--theme-border);
+  color: var(--theme-text);
+}
+
+body[data-theme='hellothere'] :is(.brand, .intro h1, .report-heading h1, .section-heading h2, .boss-name h3, .empty-state h3, .stat-card strong, .analysis-card h3, .learning-heading h3, .learning-card h4, .event-row strong, .moment-row strong, .gear-summary b, .boss-cast-row b, .priority-debuff-row b),
+body[data-theme='hellothere'] :is(.analysis-table-wrap td, .learning-card p, .review-notes p, .local-source-row b, .local-section-heading h4, .boss-guide-summary p, .guide-ability b) {
+  color: var(--theme-text);
+}
+
+body[data-theme='oiler'] :is(.brand, .intro h1, .report-heading h1, .section-heading h2, .boss-name h3, .empty-state h3, .stat-card strong, .analysis-card h3, .learning-heading h3, .learning-card h4, .event-row strong, .moment-row strong, .gear-summary b, .boss-cast-row b, .priority-debuff-row b),
+body[data-theme='oiler'] :is(.analysis-table-wrap td, .learning-card p, .review-notes p, .local-source-row b, .local-section-heading h4, .boss-guide-summary p, .guide-ability b) {
+  color: var(--theme-text);
+}
+
+body[data-theme='freedom'] :is(.brand, .intro h1, .report-heading h1, .section-heading h2, .boss-name h3, .empty-state h3, .stat-card strong, .analysis-card h3, .learning-heading h3, .learning-card h4, .event-row strong, .moment-row strong, .gear-summary b, .boss-cast-row b, .priority-debuff-row b),
+body[data-theme='freedom'] :is(.analysis-table-wrap td, .learning-card p, .review-notes p, .local-source-row b, .local-section-heading h4, .boss-guide-summary p, .guide-ability b) {
+  color: var(--theme-text);
+}
+
+body[data-theme='hellothere'] :is(.version, .system-status, .intro p, .empty-state p, .analysis-table-wrap th, .analysis-empty, .local-section-note, .player-detail-content li, .player-detail-content p),
+body[data-theme='oiler'] :is(.version, .system-status, .intro p, .empty-state p, .analysis-table-wrap th, .analysis-empty, .local-section-note, .player-detail-content li, .player-detail-content p),
+body[data-theme='freedom'] :is(.version, .system-status, .intro p, .empty-state p, .analysis-table-wrap th, .analysis-empty, .local-section-note, .player-detail-content li, .player-detail-content p) {
+  color: var(--theme-muted);
+}
+
+body[data-theme='hellothere'] :is(.theme-toggle, .analysis-controls select, .input-row input, .local-encounter-control select),
+body[data-theme='oiler'] :is(.theme-toggle, .analysis-controls select, .input-row input, .local-encounter-control select),
+body[data-theme='freedom'] :is(.theme-toggle, .analysis-controls select, .input-row input, .local-encounter-control select) {
+  background: var(--theme-surface);
+  border-color: var(--theme-border);
+  color: var(--theme-text);
+}
+
+body[data-theme='hellothere'] .theme-toggle:hover,
+body[data-theme='hellothere'] :is(.step, .leader-more summary, .player-detail summary, .class-group > summary::before, .moment-row time, .learning-number, .boss-guide-links a) { color: var(--theme-accent); }
+body[data-theme='oiler'] .theme-toggle:hover,
+body[data-theme='oiler'] :is(.step, .leader-more summary, .player-detail summary, .class-group > summary::before, .moment-row time, .learning-number, .boss-guide-links a) { color: var(--theme-accent); }
+body[data-theme='freedom'] .theme-toggle:hover,
+body[data-theme='freedom'] :is(.step, .leader-more summary, .player-detail summary, .class-group > summary::before, .moment-row time, .learning-number, .boss-guide-links a) { color: var(--theme-accent); }
+
+body[data-theme='hellothere'] .input-row button { background: var(--theme-accent); border-color: var(--theme-accent); color: #17120a; }
+body[data-theme='oiler'] .input-row button { background: var(--theme-accent); border-color: var(--theme-accent); color: #fff; }
+body[data-theme='freedom'] .input-row button { background: #ef142d; border: 3px solid #fff000; color: #fff; box-shadow: 3px 3px 0 #003bbd; }
+body[data-theme='freedom'] :is(.boss-row, .analysis-section, .analysis-card, .local-analysis-section) { border-width: 2px; }
+body[data-theme='freedom'] .class-group > summary { text-transform: uppercase; font-weight: 800; }
+body[data-theme='freedom'] .learning-loop { background: #fff000; border-color: #ef142d; color: #071b51; }
+body[data-theme='freedom'] .learning-loop strong { color: #ef142d; }
+
+body[data-theme='hellothere'] :is(.timeline-track, .boss-cast-track > div, .local-death-track > div) { background-color: #1a2940; border-color: #34445e; }
+body[data-theme='oiler'] :is(.timeline-track, .boss-cast-track > div, .local-death-track > div) { background-color: #dcebe5; border-color: #b9cec6; }
+body[data-theme='freedom'] :is(.timeline-track, .boss-cast-track > div, .local-death-track > div) { background-color: #fff000; border-color: #ef142d; }
