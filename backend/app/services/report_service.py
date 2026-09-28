@@ -62,7 +62,7 @@ query HelloThereLogsFightAnalysis($code: String!, $fightId: Int!__PLAYER_BUFF_VA
     report(code: $code) {
       code
       fights { id name encounterID startTime endTime kill }
-      masterData { actors { id name type subType petOwner } }
+      masterData { actors { id name type subType petOwner } abilities { gameID name } }
       damage: table(dataType: DamageDone, fightIDs: [$fightId], viewBy: Source)
       healing: table(dataType: Healing, fightIDs: [$fightId], viewBy: Source)
       damageTaken: table(dataType: DamageTaken, fightIDs: [$fightId], viewBy: Target)
@@ -510,6 +510,7 @@ class ReportService:
             },
             "actors": participant_actors,
             "enemy_actors": [actor for actor in all_actors if isinstance(actor, dict) and actor.get("type") != "Player"],
+            "abilities": (raw_report.get("masterData") or {}).get("abilities", []),
         }
         self.cache.set(cache_key, result)
         return result

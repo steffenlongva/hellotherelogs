@@ -44,7 +44,7 @@ class BenchmarkClient:
             self.analysis_variables = variables
             return {"reportData": {"report": {
                 "fights": [_selected_report()["fights"][0]],
-                "masterData": {"actors": [*_actors("Warrior", "Priest"), {"id": 99, "name": "Test Boss", "type": "NPC"}]},
+                "masterData": {"actors": [*_actors("Warrior", "Priest"), {"id": 99, "name": "Test Boss", "type": "NPC"}], "abilities": [{"gameID": 30528, "name": "Shadow Bolt Volley"}]},
                 "bossDebuffs": {"data": [{"type": "applydebuff", "sourceID": 11, "targetID": 99, "timestamp": 11_000, "ability": {"name": "Sunder Armor"}}], "nextPageTimestamp": None},
                 "playerBuff0": {"data": {"auras": [{"name": "Well Fed", "guid": 33254, "totalUptime": 60_000}] }},
                 "playerBuff1": {"data": {"auras": []}},
@@ -153,6 +153,7 @@ def test_fight_analysis_returns_hostile_debuff_events_and_enemy_actor_names() ->
 
     assert analysis["events"]["boss_debuffs"]["data"][0]["ability"]["name"] == "Sunder Armor"
     assert analysis["enemy_actors"] == [{"id": 99, "name": "Test Boss", "type": "NPC"}]
+    assert analysis["abilities"] == [{"gameID": 30528, "name": "Shadow Bolt Volley"}]
     assert analysis["tables"]["player_buffs"]["11"]["data"]["auras"][0]["name"] == "Well Fed"
     assert "targetID: $playerBuffTarget0" in client.analysis_query
     assert "hostilityType: Friendlies" in client.analysis_query
