@@ -5,6 +5,7 @@ import './local-log.css'
 import './aura-coverage.css'
 import './long-buff.css'
 import './upload-analysis.css'
+import './debuff-applications.css'
 import './themes.css'
 import { bossGuideFor, type BossGuide } from './boss-guides'
 import { Activity, ArrowLeft, ArrowUpRight, Check, CircleHelp, Clock3, Command, ExternalLink, LoaderCircle, Shield, Skull, Swords, Trophy } from 'lucide-react'
@@ -400,7 +401,7 @@ function formatDate(date: string): string {
 function AppearanceControls() {
   const [theme, setTheme] = useState(() => {
     const saved = localStorage.getItem('htl-theme')
-    return ['dark', 'light', 'catppuccin-mocha', 'tokyo-night', 'nord', 'hellothere', 'oiler', 'freedom'].includes(saved ?? '') ? saved as string : 'dark'
+    return ['dark', 'light', 'catppuccin-mocha', 'tokyo-night', 'nord', 'hellothere', 'oiler', 'freedom', 'sotabror'].includes(saved ?? '') ? saved as string : 'dark'
   })
   const [fontScale, setFontScale] = useState(() => {
     const stored = Number(localStorage.getItem('htl-font-scale-v2'))
@@ -414,7 +415,7 @@ function AppearanceControls() {
   }, [theme, fontScale])
   return <div className="appearance-controls" aria-label="Display settings">
     <label className="font-scale-control" title="Adjust interface text size"><span>A</span><input aria-label="Text size" type="range" min="0.9" max="1.3" step="0.05" value={fontScale} onChange={(event) => setFontScale(Number(event.target.value))} /><span className="large-a">A</span></label>
-    <label className="theme-picker"><span className="sr-only">Color theme</span><select className="theme-toggle" aria-label="Color theme" value={theme} onChange={(event) => setTheme(event.target.value)}><option value="dark">Dark</option><option value="light">Light</option><option value="catppuccin-mocha">Catppuccin Mocha</option><option value="tokyo-night">Tokyo Night</option><option value="nord">Nord</option><option value="hellothere">Hellothere</option><option value="oiler">Oiler</option><option value="freedom">FREEDOM</option></select></label>
+    <label className="theme-picker"><span className="sr-only">Color theme</span><select className="theme-toggle" aria-label="Color theme" value={theme} onChange={(event) => setTheme(event.target.value)}><option value="dark">Dark</option><option value="light">Light</option><option value="catppuccin-mocha">Catppuccin Mocha</option><option value="tokyo-night">Tokyo Night</option><option value="nord">Nord</option><option value="hellothere">Hellothere</option><option value="oiler">Oiler</option><option value="freedom">FREEDOM</option><option value="sotabror">SOTABROR</option></select></label>
   </div>
 }
 
@@ -608,7 +609,8 @@ function ReportPage({ code }: { code: string }) {
           <LongBuffCoverageCard players={playerStats} durationMs={analysis.data.fight.duration_ms} />
           <ObservedRaidBuffCard rows={playerStats.flatMap((player) => player.uptimes.flatMap((aura) => /bloodlust|heroism|windfury totem|wrath of air|totem of wrath|moonkin aura|leader of the pack|trueshot aura|unleashed rage|ferocious inspiration|battle shout|strength of earth|grace of air/i.test(aura.name) ? [{ family: aura.name, ability: aura.name, target: player.name, provider: '', uptime_seconds: analysis.data.fight.duration_ms / 1000 * (aura.percent ?? 0) / 100, uptime_percent: aura.percent ?? 0 }] : []))} />
           <div className="analysis-grid">
-            <BossDebuffPriorityCard fightName={analysis.data.fight.name} durationMs={analysis.data.fight.duration_ms} rows={analysis.data.events.boss_debuffs} actors={analysis.data.actors} enemies={analysis.data.enemy_actors ?? []} startTimeMs={analysis.data.fight.start_time_ms} />
+            <BossDebuffApplicationsCard fightName={analysis.data.fight.name} durationMs={analysis.data.fight.duration_ms} rows={analysis.data.events.boss_debuffs} actors={analysis.data.actors} enemies={analysis.data.enemy_actors ?? []} startTimeMs={analysis.data.fight.start_time_ms} abilities={analysis.data.abilities} />
+            <BossDebuffPriorityCard fightName={analysis.data.fight.name} durationMs={analysis.data.fight.duration_ms} rows={analysis.data.events.boss_debuffs} actors={analysis.data.actors} enemies={analysis.data.enemy_actors ?? []} startTimeMs={analysis.data.fight.start_time_ms} abilities={analysis.data.abilities} />
             <UptimeCard title="Fight ability uptime" sources={[{ label: 'Buff', value: analysis.data.tables.ability_uptimes }]} durationMs={analysis.data.fight.duration_ms} />
             <LeaderCard title="Damage taken · review" players={metricLeaders('damageTaken')} metric="damageTaken" tint="pink" />
           </div>
@@ -903,15 +905,15 @@ const TBC_BOSS_DEBUFFS = [
   { group: 'Raid sustain', name: 'Judgement of Light', aliases: ['judgement of light', 'judgment of light'], note: 'Provides healing from attacks against the target.' },
 ]
 
-type BossEffectRow = { name: string; provider: string; target: string; providerIsPlayer: boolean; applications: number; uptimePercent: number }
+type BossEffectRow = { name: string; provider: string; target: string; providerIsPlayer: boolean; applications: number; appliedAtSeconds: number[]; uptimePercent: number }
 
-function bossEffectRows(value: unknown, fightName: string, durationMs: number, startTimeMs: number, players: Actor[], enemies: Actor[]): BossEffectRow[] {
+function bossEffectRows(value: unknown, fightName: string, durationMs: number, startTimeMs: number, players: Actor[], enemies: Actor[], abilities: NonNullable<FightAnalysis['abilities']> = []): BossEffectRow[] {
   const events = tableRows(value).filter((row) => typeof row.timestamp === 'number').sort((a, b) => Number(a.timestamp) - Number(b.timestamp))
   const playerById = new Map(players.map((actor) => [actor.id, actor]))
   const enemyById = new Map(enemies.map((actor) => [actor.id, actor]))
   const guide = bossGuideFor(fightName)
   const bossNames = [fightName, ...(guide?.aliases ?? [])].map((name) => name.toLowerCase().replace(/[^a-z0-9]/g, ''))
-  const groups = new Map<string, { name: string; provider: string; target: string; providerIsPlayer: boolean; applications: number; intervals: Array<[number, number]>; activeAt: number | null }>()
+  const groups = new Map<string, { name: string; provider: string; target: string; providerIsPlayer: boolean; applications: number; appliedAtSeconds: number[]; intervals: Array<[number, number]>; activeAt: number | null }>()
   for (const row of events) {
     const type = String(row.type ?? '').toLowerCase()
     if (!type.includes('debuff')) continue
@@ -923,14 +925,19 @@ function bossEffectRows(value: unknown, fightName: string, durationMs: number, s
     const sourceId = actorId(row, 'source')
     const sourceActor = sourceId === null ? undefined : playerById.get(sourceId)
     const source = sourceActor?.name ?? actorName(row, 'source', [...players, ...enemies])
-    const ability = isRecord(row.ability) ? String(row.ability.name ?? '') : String(row.abilityName ?? row.name ?? '')
-    if (!ability) continue
+    const ability = eventAbilityName(row, abilities)
+    if (!ability || ability === 'Unknown ability') continue
     const key = `${sourceId ?? source}:${targetId ?? target}:${ability}`
-    const entry = groups.get(key) ?? { name: ability, provider: source, target, providerIsPlayer: Boolean(sourceActor), applications: 0, intervals: [], activeAt: null }
+    const entry = groups.get(key) ?? { name: ability, provider: source, target, providerIsPlayer: Boolean(sourceActor), applications: 0, appliedAtSeconds: [], intervals: [], activeAt: null }
     const time = Math.max(startTimeMs, Math.min(startTimeMs + durationMs, Number(row.timestamp)))
-    if (type === 'applydebuff' || type === 'applydebuffstack') {
+    if (type === 'applydebuff' || type === 'applydebuffstack' || type === 'refreshdebuff' || type === 'refreshdebuffstack') {
       entry.applications += 1
+      entry.appliedAtSeconds.push((time - startTimeMs) / 1000)
       if (entry.activeAt === null) entry.activeAt = time
+      else if (type.startsWith('refresh')) {
+        entry.intervals.push([entry.activeAt, time])
+        entry.activeAt = time
+      }
     } else if (type === 'removedebuff') {
       if (entry.activeAt !== null) entry.intervals.push([entry.activeAt, time])
       entry.activeAt = null
@@ -940,13 +947,25 @@ function bossEffectRows(value: unknown, fightName: string, durationMs: number, s
   return [...groups.values()].map((entry) => {
     const intervals = entry.activeAt === null ? entry.intervals : [...entry.intervals, [entry.activeAt, startTimeMs + durationMs] as [number, number]]
     const uptimeMs = intervals.reduce((sum, [from, to]) => sum + Math.max(0, to - from), 0)
-    return { name: entry.name, provider: entry.provider, target: entry.target, providerIsPlayer: entry.providerIsPlayer, applications: entry.applications, uptimePercent: durationMs > 0 ? Math.min(100, uptimeMs * 100 / durationMs) : 0 }
+    return { name: entry.name, provider: entry.provider, target: entry.target, providerIsPlayer: entry.providerIsPlayer, applications: entry.applications, appliedAtSeconds: entry.appliedAtSeconds, uptimePercent: durationMs > 0 ? Math.min(100, uptimeMs * 100 / durationMs) : 0 }
   })
 }
 
-function BossDebuffPriorityCard({ fightName, durationMs, startTimeMs = 0, rows, actors = [], enemies = [] }: { fightName: string; durationMs: number; startTimeMs?: number; rows: unknown; actors?: Actor[]; enemies?: Actor[] }) {
+function BossDebuffApplicationsCard({ fightName, durationMs, startTimeMs, rows, actors, enemies, abilities = [] }: { fightName: string; durationMs: number; startTimeMs: number; rows: unknown; actors: Actor[]; enemies: Actor[]; abilities?: NonNullable<FightAnalysis['abilities']> }) {
+  const effects = bossEffectRows(rows, fightName, durationMs, startTimeMs, actors, enemies, abilities)
+  const playerEffects = effects.filter((row) => row.providerIsPlayer && row.applications > 0)
+  const otherEffects = effects.filter((row) => !row.providerIsPlayer && row.applications > 0)
+  const eventsAvailable = eventDataAvailable(rows)
+  const eventsComplete = eventDataComplete(rows)
+  const renderEffects = (title: string, items: BossEffectRow[]) => {
+    return <section className="debuff-application-group"><h4>{title}<span>{items.length} effects</span></h4>{[...items].sort((a, b) => a.name.localeCompare(b.name) || a.provider.localeCompare(b.provider)).map((effect) => <article className="debuff-application-row" key={`${effect.name}-${effect.provider}-${effect.target}`}><div><b>{effect.name}</b><small>{effect.target} · {effect.applications} applications · {effect.uptimePercent.toFixed(1)}% uptime</small><div className="debuff-application-times" aria-label={`Application times for ${effect.name} by ${effect.provider}`}><strong>{effect.provider || 'Unknown source'}</strong>{effect.appliedAtSeconds.slice(0, 6).map((time, index) => <time key={`${time}-${index}`} title={`Applied at ${formatDuration(time * 1000)}`}>{formatDuration(time * 1000)}</time>)}{effect.appliedAtSeconds.length > 6 && <span title={effect.appliedAtSeconds.slice(6).map((time) => formatDuration(time * 1000)).join(', ')}>+{effect.appliedAtSeconds.length - 6}</span>}</div></div><i><em style={{ width: `${Math.min(100, effect.uptimePercent)}%` }} /></i></article>)}</section>
+  }
+  return <article className="analysis-card boss-debuff-applications"><div className="card-heading"><div><h3>Short boss debuffs</h3><p>{fightName} · applier and fight-relative application times</p></div><span>{eventsComplete ? `${playerEffects.length + otherEffects.length} EFFECTS` : 'EVENT DATA PARTIAL'}</span></div>{!eventsAvailable ? <p className="analysis-empty">Debuff application events were not returned for this pull.</p> : !playerEffects.length && !otherEffects.length ? <p className="analysis-empty">No boss debuff applications were recorded for this pull.</p> : <div className="debuff-application-columns">{playerEffects.length > 0 && renderEffects('Applied by players', playerEffects)}{otherEffects.length > 0 && renderEffects('Applied by other sources', otherEffects)}</div>}</article>
+}
+
+function BossDebuffPriorityCard({ fightName, durationMs, startTimeMs = 0, rows, actors = [], enemies = [], abilities = [] }: { fightName: string; durationMs: number; startTimeMs?: number; rows: unknown; actors?: Actor[]; enemies?: Actor[]; abilities?: NonNullable<FightAnalysis['abilities']> }) {
   const parsedRows = tableRows(rows)
-  const sourceRows: BossEffectRow[] = actors.length ? bossEffectRows(rows, fightName, durationMs, startTimeMs, actors, enemies) : parsedRows.filter((row) => row.target_is_boss === true).map((row) => ({ name: String(row.ability ?? ''), provider: String(row.provider ?? ''), target: String(row.target ?? fightName), providerIsPlayer: row.provider_is_player === true, applications: Number(row.applications ?? 0), uptimePercent: Number(row.uptime_percent ?? 0) }))
+  const sourceRows: BossEffectRow[] = actors.length ? bossEffectRows(rows, fightName, durationMs, startTimeMs, actors, enemies, abilities) : parsedRows.filter((row) => row.target_is_boss === true).map((row) => ({ name: String(row.ability ?? ''), provider: String(row.provider ?? ''), target: String(row.target ?? fightName), providerIsPlayer: row.provider_is_player === true, applications: Number(row.applications ?? 0), appliedAtSeconds: [], uptimePercent: Number(row.uptime_percent ?? 0) }))
   const groups = [...new Set(TBC_BOSS_DEBUFFS.map((item) => item.group))]
   const eventsComplete = actors.length ? eventDataComplete(rows) : true
   return <article className="boss-debuff-priority"><header><div><strong>High-value boss effects</strong><small>{fightName} · player applications · fight-relative uptime</small></div><span>{eventsComplete ? `${sourceRows.length} PROVIDER EFFECTS` : 'EVENT DATA PARTIAL'}</span></header>
