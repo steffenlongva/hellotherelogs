@@ -39,7 +39,7 @@ type Report = {
   fights: Fight[]
 }
 type Actor = { id: number; name: string; type: string; subType: string | null; specName?: string | null }
-type FightAnalysis = { fight: Fight; tables: Record<string, unknown>; events: Record<string, unknown>; player_details: unknown; actors: Actor[]; enemy_actors?: Actor[]; abilities?: Array<{ gameID?: number; name: string }>; rankings?: { recent_parses: unknown; best_rankings: unknown } }
+type FightAnalysis = { fight: Fight; tables: Record<string, unknown>; events: Record<string, unknown>; player_details: unknown; actors: Actor[]; enemy_actors?: Actor[]; abilities?: Array<{ gameID?: number | string; id?: number | string; guid?: number | string; name: string }>; rankings?: { recent_parses: unknown; best_rankings: unknown } }
 type BenchmarkCandidate = { report_code: string; fight_id: number; title: string | null; guild: string | null; duration_seconds: number | null; fight_percentage?: number | null; rank_percent: number | null; composition_similarity: number | null; average_item_level: number | null; item_level_difference: number | null; matched_specs?: string[]; url: string }
 type BenchmarkReference = { report_code: string; fight_id: number; title: string | null; fight: Fight; actors: Actor[]; player_specs: Record<string, string>; tables: Record<string, unknown>; events: Record<string, unknown>; player_details?: unknown }
 type Benchmarks = { status: 'available' | 'empty' | 'unavailable'; encounter: string | null; strictness: string; cohort_source: string; source: string; sample_size: number; match_basis: string[]; limitations: string[]; candidates: BenchmarkCandidate[]; reference_analyses: BenchmarkReference[] }
@@ -216,12 +216,12 @@ function actorName(row: Record<string, unknown>, role?: 'source' | 'target', act
   return actors.find((actor) => actor.id === id)?.name ?? 'Unknown'
 }
 
-function eventAbilityName(row: Record<string, unknown>, abilities: Array<{ gameID?: number; name: string }> = []): string {
+function eventAbilityName(row: Record<string, unknown>, abilities: Array<{ gameID?: number | string; id?: number | string; guid?: number | string; name: string }> = []): string {
   const nestedAbility = isRecord(row.ability) ? row.ability : null
   const directName = nestedAbility?.name ?? row.abilityName ?? row.name
   if (typeof directName === 'string' && directName.length) return directName
-  const abilityId = Number(row.abilityGameID ?? row.abilityGameId ?? row.abilityID ?? row.abilityId ?? nestedAbility?.guid ?? nestedAbility?.id)
-  const match = abilities.find((ability) => Number(ability.gameID) === abilityId)
+  const abilityId = Number(row.abilityGameID ?? row.abilityGameId ?? row.abilityID ?? row.abilityId ?? nestedAbility?.gameID ?? nestedAbility?.guid ?? nestedAbility?.id ?? (typeof row.ability === 'number' || typeof row.ability === 'string' ? row.ability : undefined))
+  const match = abilities.find((ability) => [ability.gameID, ability.id, ability.guid].some((id) => id !== undefined && Number(id) === abilityId))
   return match?.name ?? (Number.isFinite(abilityId) ? `Ability ${abilityId}` : 'Unknown ability')
 }
 
@@ -982,7 +982,7 @@ function BossCastCard({ fightName, durationMs, startTimeMs = 0, casts, interrupt
   casts: unknown
   interrupts: unknown
   actors: Actor[]
-  abilities?: Array<{ gameID?: number; name: string }>
+  abilities?: Array<{ gameID?: number | string; id?: number | string; guid?: number | string; name: string }>
   localCasts?: LocalBossCast[]
 }) {
   const normalized = localCasts
