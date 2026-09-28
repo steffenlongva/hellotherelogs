@@ -39,7 +39,7 @@ type Report = {
   fights: Fight[]
 }
 type Actor = { id: number; name: string; type: string; subType: string | null; specName?: string | null }
-type FightAnalysis = { fight: Fight; tables: Record<string, unknown>; events: Record<string, unknown>; player_details: unknown; actors: Actor[]; rankings?: { recent_parses: unknown; best_rankings: unknown } }
+type FightAnalysis = { fight: Fight; tables: Record<string, unknown>; events: Record<string, unknown>; player_details: unknown; actors: Actor[]; enemy_actors?: Actor[]; rankings?: { recent_parses: unknown; best_rankings: unknown } }
 type BenchmarkCandidate = { report_code: string; fight_id: number; title: string | null; guild: string | null; duration_seconds: number | null; fight_percentage?: number | null; rank_percent: number | null; composition_similarity: number | null; average_item_level: number | null; item_level_difference: number | null; matched_specs?: string[]; url: string }
 type BenchmarkReference = { report_code: string; fight_id: number; title: string | null; fight: Fight; actors: Actor[]; player_specs: Record<string, string>; tables: Record<string, unknown>; events: Record<string, unknown>; player_details?: unknown }
 type Benchmarks = { status: 'available' | 'empty' | 'unavailable'; encounter: string | null; strictness: string; cohort_source: string; source: string; sample_size: number; match_basis: string[]; limitations: string[]; candidates: BenchmarkCandidate[]; reference_analyses: BenchmarkReference[] }
@@ -297,12 +297,16 @@ function makePlayerStats(analysis: FightAnalysis): PlayerStats[] {
       const gemCount = gemFieldsPresent ? gear.reduce((count, item) => count + (Array.isArray(item.gems) ? item.gems.filter((gem) => gem !== null && gem !== 0 && gem !== '').length : 0), 0) : null
       const auras = Array.isArray(combatantInfo?.auras) ? combatantInfo.auras.map((aura) => isRecord(aura) ? String((isRecord(aura.ability) ? aura.ability.name : undefined) ?? aura.name ?? '') : '').filter(Boolean) : []
       const consumablePattern = /potion|flask|elixir|food|feast|rune|healthstone|mana stone|wizard oil|sharpening|consecrated|free action|protection potion/i
-      const consumables = [...new Set(allRecords(castsRow).map((record) => record.name).filter((name): name is string => typeof name === 'string' && consumablePattern.test(name)))]
-      const uptimes = allRecords(buffRow).filter((record) => record !== buffRow && typeof record.name === 'string').map((record) => {
+      const consumables = [...new Set(allRecords(castsRow).map((record) => isRecord(record.ability) ? record.ability.name : record.name).filter((name): name is string => typeof name === 'string' && consumablePattern.test(name)))]
+      const uptimes = allRecords(buffRow).filter((record) => record !== buffRow && (typeof record.name === 'string' || (isRecord(record.ability) && typeof record.ability.name === 'string'))).map((record) => {
         const rawPercent = record.uptimePercent ?? record.uptime ?? record.percent ?? record.percentage
-        let percent = typeof rawPercent === 'string' && rawPercent.endsWith('%') ? Number.parseFloat(rawPercent) : numericValue(record, ['uptimePercent', 'uptime', 'percent', 'percentage', 'totalTime', 'activeTime'])
+        const active = numericValue(record, ['totalUptime', 'activeTime'])
+        const total = numericValue(record, ['totalTime'])
+        let percent = typeof rawPercent === 'string' && rawPercent.endsWith('%') ? Number.parseFloat(rawPercent) : numericValue(record, ['uptimePercent', 'uptime', 'percent', 'percentage'])
+        if (percent === null && active !== null && total !== null && total > 0) percent = active * 100 / total
+        if (percent === null && active !== null && durationSeconds > 0) percent = active * 100 / analysis.fight.duration_ms
         if (percent !== null && percent > 100 && durationSeconds > 0) percent = 100 * percent / analysis.fight.duration_ms
-        return { name: String(record.name), percent: percent === null ? null : Math.max(0, Math.min(100, percent)) }
+        return { name: String((isRecord(record.ability) ? record.ability.name : undefined) ?? record.name), percent: percent === null ? null : Math.max(0, Math.min(100, percent)) }
       }).filter((ability, index, rows) => rows.findIndex((item) => item.name === ability.name) === index)
       return {
         ...actor,
@@ -556,7 +560,7 @@ function ReportPage({ code }: { code: string }) {
           <BossReferenceCard fightName={analysis.data.fight.name} durationMs={analysis.data.fight.duration_ms} casts={tableRows(analysis.data.events.boss_casts).filter((row) => String(row.type ?? '').toLowerCase() === 'cast').map((row) => { const ability = String((isRecord(row.ability) ? row.ability.name : undefined) ?? row.abilityName ?? row.name ?? 'Unknown cast'); const source = actorName(row, 'source', analysis.data.actors); const priority = castPriority(analysis.data.fight.name, source, ability); return { timestamp_seconds: Math.max(0, (Number(row.timestamp) - analysis.data.fight.start_time_ms) / 1000), source, ability, status: 'completed' as const, priority: priority.priority, reason: priority.reason, cast_ms: numericValue(row, ['castTime', 'duration']) ?? 0 } })} damageSources={playerStats.flatMap((player) => player.damageTakenSources)} />
           <BossCastCard fightName={analysis.data.fight.name} durationMs={analysis.data.fight.duration_ms} startTimeMs={analysis.data.fight.start_time_ms} casts={analysis.data.events.boss_casts} interrupts={analysis.data.events.interrupts} actors={analysis.data.actors} />
           <BenchmarkCard benchmarks={benchmarks.data} analysis={analysis.data} players={playerStats} isLoading={benchmarks.isLoading} error={benchmarks.error?.message} strictness={benchmarkStrictness} onStrictnessChange={setBenchmarkStrictness} source={effectiveBenchmarkSource} onSourceChange={setBenchmarkSource} />
-          <LearningPlan players={playerStats} deaths={deathEvents} interruptCount={interruptEvents.length} interruptsAvailable={eventDataAvailable(analysis.data.events.interrupts)} deathsAvailable={eventDataAvailable(analysis.data.events.deaths)} />
+          <LearningPlan fightName={analysis.data.fight.name} players={playerStats} deaths={deathEvents} interruptCount={interruptEvents.length} interruptsAvailable={eventDataAvailable(analysis.data.events.interrupts)} deathsAvailable={eventDataAvailable(analysis.data.events.deaths)} />
           <div className="leader-grid">
             <LeaderCard title="Damage" players={metricLeaders('damage')} metric="damage" tint="blue" />
             <LeaderCard title="Healing" players={metricLeaders('healing')} metric="healing" tint="mint" />
@@ -567,7 +571,7 @@ function ReportPage({ code }: { code: string }) {
           <LongBuffCoverageCard players={playerStats} durationMs={analysis.data.fight.duration_ms} />
           <ObservedRaidBuffCard rows={playerStats.flatMap((player) => player.uptimes.flatMap((aura) => /bloodlust|heroism|windfury totem|wrath of air|totem of wrath|moonkin aura|leader of the pack|trueshot aura|unleashed rage|ferocious inspiration|battle shout|strength of earth|grace of air/i.test(aura.name) ? [{ family: aura.name, ability: aura.name, target: player.name, provider: '', uptime_seconds: analysis.data.fight.duration_ms / 1000 * (aura.percent ?? 0) / 100, uptime_percent: aura.percent ?? 0 }] : []))} />
           <div className="analysis-grid">
-            <BossDebuffPriorityCard fightName={analysis.data.fight.name} durationMs={analysis.data.fight.duration_ms} rows={tableRows(analysis.data.tables.debuff_uptimes)} />
+            <BossDebuffPriorityCard fightName={analysis.data.fight.name} durationMs={analysis.data.fight.duration_ms} rows={analysis.data.events.boss_debuffs} actors={analysis.data.actors} enemies={analysis.data.enemy_actors ?? []} startTimeMs={analysis.data.fight.start_time_ms} />
             <UptimeCard title="Fight ability uptime" sources={[{ label: 'Buff', value: analysis.data.tables.ability_uptimes }]} durationMs={analysis.data.fight.duration_ms} />
             <LeaderCard title="Damage taken · review" players={metricLeaders('damageTaken')} metric="damageTaken" tint="pink" />
           </div>
@@ -710,7 +714,8 @@ function BenchmarkCard({ benchmarks, analysis, players, isLoading, error, strict
   </article>
 }
 
-function LearningPlan({ players, deaths, interruptCount, deathsAvailable, interruptsAvailable }: { players: PlayerStats[]; deaths: Array<Record<string, unknown>>; interruptCount: number; deathsAvailable: boolean; interruptsAvailable: boolean }) {
+function LearningPlan({ fightName, players, deaths, interruptCount, deathsAvailable, interruptsAvailable }: { fightName: string; players: PlayerStats[]; deaths: Array<Record<string, unknown>>; interruptCount: number; deathsAvailable: boolean; interruptsAvailable: boolean }) {
+  const guide = bossGuideFor(fightName)
   const deathTimes = deaths.map((row) => Number(row.timestamp)).filter(Number.isFinite).sort((a, b) => a - b)
   const clusteredDeaths = deathTimes.some((time, index) => deathTimes.slice(index + 1).some((later) => later - time <= 10_000))
   const classCounts = new Map<string, number>()
@@ -721,9 +726,9 @@ function LearningPlan({ players, deaths, interruptCount, deathsAvailable, interr
     <div className="learning-heading"><div><span className="eyebrow">TURN THE LOG INTO PRACTICE</span><h3 id="learning-plan-title">What to learn for the next pull</h3><p>Choose one team habit to review, agree on a response, then check the next attempt for the same moment.</p></div><span className="learning-count">4 REVIEW TOPICS</span></div>
     <div className="learning-grid">
       <details className="learning-card"><summary><span className="learning-number">01 / SURVIVAL</span><h4>{deathsAvailable ? `${deaths.length} deaths to review` : 'Death data unavailable'}</h4><span className="learning-expand">Read review steps</span></summary><div className="learning-content"><p>{deathsAvailable && deaths.length ? 'Use the timeline and each player recap to find the last damaging mechanic, then check whether movement, positioning, healing, or a personal defensive could change the outcome.' : 'Open the timeline on a wipe or pull with deaths. Trace the mechanic and response before deciding whether damage was avoidable.'}</p><small>{deathsAvailable && deaths.length ? (clusteredDeaths ? 'Several deaths landed within 10 seconds: review raid-wide damage and defensive coverage together.' : 'Ask each player what they saw and which response they will try next time.') : 'Damage taken alone cannot tell expected damage from a mistake.'}</small></div></details>
-      <details className="learning-card"><summary><span className="learning-number">02 / INTERRUPTS</span><h4>{interruptsAvailable ? `${interruptCount} kicks recorded` : 'Kick events unavailable'}</h4><span className="learning-expand">Read review steps</span></summary><div className="learning-content"><p>Use successful kicks to map who covered each cast. Then check the enemy cast timeline in Warcraft Logs for casts that finished, and assign a primary kicker plus a backup.</p><small>{interruptsAvailable ? 'A low kick count is not proof of missed kicks; this view does not yet collect failed interrupt opportunities.' : 'Review cast coverage directly in Warcraft Logs for this pull.'}</small></div></details>
+      <details className="learning-card"><summary><span className="learning-number">02 / BOSS MECHANICS</span><h4>{guide?.abilities[0]?.name ?? `${interruptsAvailable ? `${interruptCount} kicks recorded` : 'Boss casts to review'}`}</h4><span className="learning-expand">Read strategy prompts</span></summary><div className="learning-content"><p>{guide?.abilities.slice(0, 2).map((ability) => `${ability.name}: ${ability.summary}`).join(' ') ?? 'Use successful kicks to map who covered each cast. Compare completed casts with the encounter plan and agree primary and backup assignments.'}</p><small>Strategy notes are encounter prompts. Confirm phase, raid composition, and assignments before treating a cast as a missed response.</small></div></details>
       <details className="learning-card"><summary><span className="learning-number">03 / RAID COVERAGE</span><h4>Match buffs and utility to this roster</h4><span className="learning-expand">Read review steps</span></summary><div className="learning-content"><p>{classSummary ? `This pull had ${classSummary}. Compare the class mix and reported buff rows with the utility your strategy expects.` : 'Compare the raid composition and reported buff rows with the utility your strategy expects.'}</p><small>{observedBuffs.length ? `Reported examples: ${observedBuffs.join(', ')}. Confirm provider, target, and assignment before calling coverage low.` : 'Buff rows are not a complete list of external buffs; confirm coverage and ownership in the log.'}</small></div></details>
-      <details className="learning-card"><summary><span className="learning-number">04 / COOLDOWNS</span><h4>Plan defensive coverage before danger windows</h4><span className="learning-expand">Read review steps</span></summary><div className="learning-content"><p>Mark the next high-damage phase on the timeline. Assign raid defensives and personal cooldown reminders around it, then compare casts and deaths on the next pull.</p><small>This report does not yet identify unused cooldowns, so treat this as a planning prompt rather than a finding.</small></div></details>
+      <details className="learning-card"><summary><span className="learning-number">04 / POSITION & RESPONSE</span><h4>{guide?.abilities.find((ability) => ability.danger === 'position' || ability.danger === 'raid')?.name ?? 'Plan defensive coverage before danger windows'}</h4><span className="learning-expand">Read review steps</span></summary><div className="learning-content"><p>{guide?.abilities.filter((ability) => ability.danger === 'position' || ability.danger === 'raid').slice(0, 2).map((ability) => `${ability.name}: ${ability.summary}`).join(' ') || 'Mark the next high-damage phase on the timeline. Assign raid defensives and personal cooldown reminders around it, then compare casts and deaths on the next pull.'}</p><small>Use deaths and incoming damage as clues to review a strategy, not as proof of player error.</small></div></details>
     </div>
     <div className="learning-loop"><strong>Make it stick</strong><span>Pick one topic · name an owner · agree on a response · compare the same moment next pull</span></div>
   </section>
@@ -754,7 +759,8 @@ function PlayerDetail({ player }: { player: PlayerStats }) {
   const enchantItems = player.gear.filter((item) => item.permanentEnchantName ?? item.permanentEnchant ?? item.enchantName ?? item.enchant)
   const gemItems = player.gear.flatMap((item) => Array.isArray(item.gems) ? item.gems.filter((gem) => gem !== null && gem !== 0 && gem !== '').map((gem) => ({ item, gem })) : [])
   const maxDamageSource = Math.max(1, ...player.damageTakenSources.map((source) => source.amount))
-  return <details className="player-detail"><summary>Review player</summary><div className="player-detail-content">
+  const topDamage = player.damageTakenSources[0]
+  return <details className="player-detail"><summary>Review · {player.uptimes.length ? `${player.uptimes.length} uptime rows` : 'uptime unavailable'}{topDamage ? ` · top taken: ${topDamage.ability} (${formatMetric(topDamage.amount)})` : ' · damage sources unavailable'}</summary><div className="player-detail-content">
     <section><h4>Evidence to review</h4><ul className="suggestion-list">{playerSuggestions(player).map((note) => <li key={note}>{note}</li>)}</ul></section>
     <section><h4>Damage taken sources</h4>{player.damageTakenSources.length ? <div className="player-damage-sources">{player.damageTakenSources.slice(0, 5).map((source) => <div key={`${source.source}-${source.ability}-${source.damage_type}`}><span><b>{source.ability}</b><small>{source.source || 'Source not identified'}{source.damage_type ? ` · ${source.damage_type}` : ''}</small></span><i><em style={{ width: `${Math.max(2, source.amount * 100 / maxDamageSource)}%` }} /></i><strong>{formatMetric(source.amount)}</strong></div>)}</div> : <p className="analysis-empty">Warcraft Logs did not return a readable ability breakdown for damage taken.</p>}</section>
     {(player.recentPercentile !== null || player.bestPercentile !== null) && <section><h4>WCL performance context</h4><p><b>Recent parses:</b> {player.recentPercentile === null ? 'Unavailable' : `${player.recentPercentile.toFixed(1)} percentile`}</p><p><b>Best-score rankings:</b> {player.bestPercentile === null ? 'Unavailable' : `${player.bestPercentile.toFixed(1)} percentile`}</p><p>These percentiles compare this pull against Warcraft Logs rankings, not against this guild's assignments or a fully composition-matched cohort.</p></section>}
@@ -764,7 +770,7 @@ function PlayerDetail({ player }: { player: PlayerStats }) {
       <details><summary>Gem details ({gemItems.length})</summary><ul>{gemItems.map(({ item, gem }, index) => <li key={index}><span>{String(item.name ?? item.itemName ?? 'Equipped item')}</span><strong>{isRecord(gem) ? String(gem.name ?? gem.id ?? 'Gem') : String(gem)}</strong></li>)}</ul></details>
       {player.gear.length > 0 && <details><summary>Equipped items ({player.gear.length})</summary><ul>{player.gear.map((item, index) => <li key={index}><span>{String(item.name ?? item.itemName ?? `Item ${item.id ?? ''}`)}</span><strong>{numericValue(item, ['itemLevel', 'itemlevel', 'ilevel', 'ilvl']) ?? '—'}</strong></li>)}</ul></details>}
     </section>
-    <section><h4>Preparation</h4><p><b>Consumable casts:</b> {player.consumables.length ? player.consumables.join(', ') : 'No matching casts returned'}</p><p><b>Auras at pull:</b> {player.auras.length ? player.auras.join(', ') : 'Unavailable'}</p></section>
+    <section><h4>Preparation · buffs and consumables</h4><p><b>Consumables observed:</b> {player.consumables.length ? player.consumables.join(', ') : 'No matching consumable casts in returned data'}</p><p><b>Buffs at pull:</b> {player.auras.length ? player.auras.join(', ') : 'Not returned by Warcraft Logs'}</p><p>These are log observations; a missing entry can also mean the report started after preparation or did not include the relevant data.</p></section>
   </div></details>
 }
 
@@ -859,27 +865,61 @@ const TBC_BOSS_DEBUFFS = [
   { group: 'Raid sustain', name: 'Judgement of Light', aliases: ['judgement of light', 'judgment of light'], note: 'Provides healing from attacks against the target.' },
 ]
 
-function BossDebuffPriorityCard({ fightName, durationMs, rows }: { fightName: string; durationMs: number; rows: unknown }) {
-  const sourceRows = tableRows(rows)
+type BossEffectRow = { name: string; provider: string; target: string; providerIsPlayer: boolean; applications: number; uptimePercent: number }
+
+function bossEffectRows(value: unknown, fightName: string, durationMs: number, startTimeMs: number, players: Actor[], enemies: Actor[]): BossEffectRow[] {
+  const events = tableRows(value).filter((row) => typeof row.timestamp === 'number').sort((a, b) => Number(a.timestamp) - Number(b.timestamp))
+  const playerById = new Map(players.map((actor) => [actor.id, actor]))
+  const enemyById = new Map(enemies.map((actor) => [actor.id, actor]))
+  const guide = bossGuideFor(fightName)
+  const bossNames = [fightName, ...(guide?.aliases ?? [])].map((name) => name.toLowerCase().replace(/[^a-z0-9]/g, ''))
+  const groups = new Map<string, { name: string; provider: string; target: string; providerIsPlayer: boolean; applications: number; intervals: Array<[number, number]>; activeAt: number | null }>()
+  for (const row of events) {
+    const type = String(row.type ?? '').toLowerCase()
+    if (!type.includes('debuff')) continue
+    const targetId = actorId(row, 'target')
+    const target = actorName(row, 'target', enemies)
+    const targetActor = targetId === null ? undefined : enemyById.get(targetId)
+    const normalizedTarget = (targetActor?.name ?? target).toLowerCase().replace(/[^a-z0-9]/g, '')
+    if (!bossNames.some((name) => name && (normalizedTarget === name || normalizedTarget.includes(name) || name.includes(normalizedTarget)))) continue
+    const sourceId = actorId(row, 'source')
+    const sourceActor = sourceId === null ? undefined : playerById.get(sourceId)
+    const source = sourceActor?.name ?? actorName(row, 'source', [...players, ...enemies])
+    const ability = isRecord(row.ability) ? String(row.ability.name ?? '') : String(row.abilityName ?? row.name ?? '')
+    if (!ability) continue
+    const key = `${sourceId ?? source}:${targetId ?? target}:${ability}`
+    const entry = groups.get(key) ?? { name: ability, provider: source, target, providerIsPlayer: Boolean(sourceActor), applications: 0, intervals: [], activeAt: null }
+    const time = Math.max(startTimeMs, Math.min(startTimeMs + durationMs, Number(row.timestamp)))
+    if (type === 'applydebuff' || type === 'applydebuffstack') {
+      entry.applications += 1
+      if (entry.activeAt === null) entry.activeAt = time
+    } else if (type === 'removedebuff') {
+      if (entry.activeAt !== null) entry.intervals.push([entry.activeAt, time])
+      entry.activeAt = null
+    }
+    groups.set(key, entry)
+  }
+  return [...groups.values()].map((entry) => {
+    const intervals = entry.activeAt === null ? entry.intervals : [...entry.intervals, [entry.activeAt, startTimeMs + durationMs] as [number, number]]
+    const uptimeMs = intervals.reduce((sum, [from, to]) => sum + Math.max(0, to - from), 0)
+    return { name: entry.name, provider: entry.provider, target: entry.target, providerIsPlayer: entry.providerIsPlayer, applications: entry.applications, uptimePercent: durationMs > 0 ? Math.min(100, uptimeMs * 100 / durationMs) : 0 }
+  })
+}
+
+function BossDebuffPriorityCard({ fightName, durationMs, startTimeMs = 0, rows, actors = [], enemies = [] }: { fightName: string; durationMs: number; startTimeMs?: number; rows: unknown; actors?: Actor[]; enemies?: Actor[] }) {
+  const parsedRows = tableRows(rows)
+  const sourceRows: BossEffectRow[] = actors.length ? bossEffectRows(rows, fightName, durationMs, startTimeMs, actors, enemies) : parsedRows.filter((row) => row.target_is_boss === true).map((row) => ({ name: String(row.ability ?? ''), provider: String(row.provider ?? ''), target: String(row.target ?? fightName), providerIsPlayer: row.provider_is_player === true, applications: Number(row.applications ?? 0), uptimePercent: Number(row.uptime_percent ?? 0) }))
   const groups = [...new Set(TBC_BOSS_DEBUFFS.map((item) => item.group))]
-  return <article className="boss-debuff-priority"><header><div><strong>High-value boss effects</strong><small>{fightName} · fight-relative uptime</small></div><span>{sourceRows.length} OBSERVED ROWS</span></header>
+  const eventsComplete = actors.length ? eventDataComplete(rows) : true
+  return <article className="boss-debuff-priority"><header><div><strong>High-value boss effects</strong><small>{fightName} · player applications · fight-relative uptime</small></div><span>{eventsComplete ? `${sourceRows.length} PROVIDER EFFECTS` : 'EVENT DATA PARTIAL'}</span></header>
     {groups.map((group) => <section key={group}><h5>{group}{group === 'Armor reduction' && <small> strongest applicable effect wins</small>}</h5>{TBC_BOSS_DEBUFFS.filter((rule) => rule.group === group).map((rule) => {
       const matches = sourceRows.filter((row) => {
-        const name = String((isRecord(row.ability) ? row.ability.name : undefined) ?? row.name ?? '').toLowerCase()
+        const name = row.name.toLowerCase()
         return rule.aliases.some((alias) => name.includes(alias))
       })
-      const uptimes = matches.map((row) => {
-        const raw = row.uptimePercent ?? row.uptime ?? row.percent ?? row.percentage
-        const parsed = typeof raw === 'string' && raw.endsWith('%') ? Number.parseFloat(raw) : numericValue(row, ['uptimePercent', 'uptime', 'percent', 'percentage'])
-        const total = numericValue(row, ['totalUptime'])
-        return parsed ?? (total !== null && durationMs > 0 ? total * 100 / durationMs : null)
-      }).filter((value): value is number => value !== null && Number.isFinite(value) && value >= 0 && value <= 100)
-      const percent = uptimes.length ? Math.max(...uptimes) : null
-      const providers = [...new Set(matches.flatMap((row) => {
-        const source = typeof row.provider === 'string' ? row.provider : typeof row.sourceName === 'string' ? row.sourceName : isRecord(row.source) && typeof row.source.name === 'string' ? row.source.name : ''
-        return source ? [source] : []
-      }))]
-      return <div className={`priority-debuff-row ${percent === null ? 'no-debuff-evidence' : ''}`} key={rule.name}><div><b>{rule.name}</b><small>{rule.note}{providers.length ? ` · ${providers.join(', ')}` : ''}</small></div><i><em style={{ width: `${Math.min(100, percent ?? 0)}%` }} /></i><strong>{percent === null ? 'No log evidence' : `${percent.toFixed(0)}%`}</strong></div>
+      const playerMatches = matches.filter((row) => row.providerIsPlayer)
+      const percent = playerMatches.length ? Math.max(...playerMatches.map((row) => row.uptimePercent)) : null
+      return <div className={`priority-debuff-row ${percent === null ? 'no-debuff-evidence' : ''}`} key={rule.name}><div><b>{rule.name}</b><small>{rule.note}</small>{playerMatches.map((row) => <small className="effect-provider" key={`${row.provider}-${row.target}`}>{row.provider} → {row.target}: {row.applications} applies · {row.uptimePercent.toFixed(1)}% uptime</small>)}{matches.some((row) => !row.providerIsPlayer) && <small>Also observed from non-player sources</small>}</div><i><em style={{ width: `${Math.min(100, percent ?? 0)}%` }} /></i><strong>{percent === null ? (eventsComplete ? 'No log evidence' : 'Unavailable') : `${percent.toFixed(1)}%`}</strong></div>
     })}</section>)}
     <p>“No log evidence” is a prompt to check roster, assignment, immunity, and phase. It does not by itself mean the raid missed an effect.</p>
   </article>
