@@ -40,7 +40,8 @@ class BenchmarkClient:
         if query.lstrip().startswith("query HelloThereLogsFightAnalysis"):
             return {"reportData": {"report": {
                 "fights": [_selected_report()["fights"][0]],
-                "masterData": {"actors": _actors("Warrior", "Priest")},
+                "masterData": {"actors": [*_actors("Warrior", "Priest"), {"id": 99, "name": "Test Boss", "type": "NPC"}]},
+                "bossDebuffs": {"data": [{"type": "applydebuff", "sourceID": 11, "targetID": 99, "timestamp": 11_000, "ability": {"name": "Sunder Armor"}}], "nextPageTimestamp": None},
                 "friendlyDamage0": {"data": [], "nextPageTimestamp": None},
                 "friendlyDamage1": {"data": [], "nextPageTimestamp": None},
                 "playerDetails": {"players": [
@@ -137,6 +138,15 @@ def test_ranking_helpers_extract_public_fight_metadata() -> None:
         "item_level_difference": None,
         "url": "https://fresh.warcraftlogs.com/reports/PeerA123#fight=4",
     }
+
+
+def test_fight_analysis_returns_hostile_debuff_events_and_enemy_actor_names() -> None:
+    client = BenchmarkClient()
+    service = ReportService(client, MemoryCache())
+    analysis = asyncio.run(service.get_fight_analysis("Guild123", 1))
+
+    assert analysis["events"]["boss_debuffs"]["data"][0]["ability"]["name"] == "Sunder Armor"
+    assert analysis["enemy_actors"] == [{"id": 99, "name": "Test Boss", "type": "NPC"}]
 
 
 def test_benchmark_helpers_use_actor_class_and_item_data() -> None:

@@ -72,6 +72,7 @@ query HelloThereLogsFightAnalysis($code: String!, $fightId: Int!) {
       buffUptimes: table(dataType: Buffs, fightIDs: [$fightId], viewBy: Target)
       abilityUptimes: table(dataType: Buffs, fightIDs: [$fightId], viewBy: Ability)
       debuffUptimes: table(dataType: Debuffs, fightIDs: [$fightId], viewBy: Ability)
+      bossDebuffs: events(dataType: Debuffs, fightIDs: [$fightId], hostilityType: Enemies, limit: 10000, useActorIDs: true, useAbilityIDs: true) { data nextPageTimestamp }
       interruptEvents: events(dataType: Interrupts, fightIDs: [$fightId], limit: 10000, useActorIDs: true, useAbilityIDs: true) { data nextPageTimestamp }
       bossCasts: events(dataType: Casts, fightIDs: [$fightId], hostilityType: Enemies, limit: 10000, useActorIDs: true, useAbilityIDs: true) { data nextPageTimestamp }
       combatantInfo: events(dataType: CombatantInfo, fightIDs: [$fightId], limit: 10000, useActorIDs: true, useAbilityIDs: true) { data nextPageTimestamp }
@@ -319,6 +320,16 @@ query HelloThereLogsFriendlyDamagePage($code: String!, $fightId: Int!, $sourceId
 }
 """
 
+BOSS_DEBUFF_PAGE_QUERY = """
+query HelloThereLogsBossDebuffPage($code: String!, $fightId: Int!, $startTime: Float!) {
+  reportData {
+    report(code: $code) {
+      bossDebuffPage: events(dataType: Debuffs, fightIDs: [$fightId], hostilityType: Enemies, startTime: $startTime, limit: 10000, useActorIDs: true, useAbilityIDs: true) { data nextPageTimestamp }
+    }
+  }
+}
+"""
+
 ENCOUNTER_RANKINGS_QUERY = """
 query HelloThereLogsEncounterBenchmarks($encounterId: Int!, $difficulty: Int!, $size: Int!) {
   worldData {
@@ -396,7 +407,7 @@ class ReportService:
         fight = next((item for item in report["fights"] if item["fight_id"] == fight_id), None)
         if fight is None:
             raise ReportNotFoundError("Fight was not found in this report.")
-        cache_key = f"analysis:v5:{code}:{fight_id}"
+        cache_key = f"analysis:v6:{code}:{fight_id}"
         cached = self.cache.get(cache_key)
         if cached is not None:
             return cached
@@ -417,6 +428,20 @@ class ReportService:
             and actor.get("id") in participant_ids
         ]
         source_event_data = {player_id: raw_report.get(f"friendlyDamage{index}") for index, player_id in enumerate(player_ids)}
+        boss_debuffs = raw_report.get("bossDebuffs")
+        boss_debuff_page = boss_debuffs
+        boss_debuff_pages = 1
+        while isinstance(boss_debuff_page, dict) and boss_debuff_page.get("nextPageTimestamp") is not None and boss_debuff_pages < 6:
+            cursor = boss_debuff_page["nextPageTimestamp"]
+            next_data = await self.client.query(BOSS_DEBUFF_PAGE_QUERY, {"code": code, "fightId": fight_id, "startTime": cursor})
+            next_report = self._report_from_response(next_data)
+            next_page = next_report.get("bossDebuffPage")
+            if not isinstance(next_page, dict) or not isinstance(next_page.get("data"), list):
+                break
+            previous_events = boss_debuff_page.get("data") if isinstance(boss_debuff_page.get("data"), list) else []
+            boss_debuffs = {"data": previous_events + next_page["data"], "nextPageTimestamp": next_page.get("nextPageTimestamp")}
+            boss_debuff_page = boss_debuffs
+            boss_debuff_pages += 1
         for player_id, first_page in source_event_data.items():
             page = first_page
             page_count = 1
@@ -462,6 +487,7 @@ class ReportService:
                 "interrupts": raw_report.get("interruptEvents"),
                 "boss_casts": raw_report.get("bossCasts"),
                 "combatant_info": raw_report.get("combatantInfo"),
+                "boss_debuffs": boss_debuffs,
             },
             "player_details": raw_report.get("playerDetails"),
             "rankings": {
@@ -469,6 +495,7 @@ class ReportService:
                 "best_rankings": raw_report.get("bestRankings"),
             },
             "actors": participant_actors,
+            "enemy_actors": [actor for actor in all_actors if isinstance(actor, dict) and actor.get("type") != "Player"],
         }
         self.cache.set(cache_key, result)
         return result
