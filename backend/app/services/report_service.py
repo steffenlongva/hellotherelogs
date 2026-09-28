@@ -73,6 +73,7 @@ query HelloThereLogsFightAnalysis($code: String!, $fightId: Int!) {
       abilityUptimes: table(dataType: Buffs, fightIDs: [$fightId], viewBy: Ability)
       debuffUptimes: table(dataType: Debuffs, fightIDs: [$fightId], viewBy: Ability)
       interruptEvents: events(dataType: Interrupts, fightIDs: [$fightId], limit: 10000, useActorIDs: true, useAbilityIDs: true) { data nextPageTimestamp }
+      bossCasts: events(dataType: Casts, fightIDs: [$fightId], hostilityType: Enemies, limit: 10000, useActorIDs: true, useAbilityIDs: true) { data nextPageTimestamp }
       combatantInfo: events(dataType: CombatantInfo, fightIDs: [$fightId], limit: 10000, useActorIDs: true, useAbilityIDs: true) { data nextPageTimestamp }
       playerDetails: playerDetails(fightIDs: [$fightId], includeCombatantInfo: true)
       parseRankings: rankings(compare: Parses, fightIDs: [$fightId])
@@ -459,6 +460,7 @@ class ReportService:
             "events": {
                 "deaths": raw_report.get("deaths"),
                 "interrupts": raw_report.get("interruptEvents"),
+                "boss_casts": raw_report.get("bossCasts"),
                 "combatant_info": raw_report.get("combatantInfo"),
             },
             "player_details": raw_report.get("playerDetails"),

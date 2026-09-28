@@ -28,6 +28,22 @@ LONG_BUFF_FAMILIES = {
     "Divine Spirit": ("divine spirit", "prayer of spirit"),
     "Shadow Protection": ("shadow protection", "prayer of shadow protection"),
 }
+IN_FIGHT_BUFFS = {
+    "Bloodlust": ("bloodlust", "heroism"), "Windfury Totem": ("windfury totem",),
+    "Wrath of Air Totem": ("wrath of air totem",), "Totem of Wrath": ("totem of wrath",),
+    "Moonkin Aura": ("moonkin aura",), "Leader of the Pack": ("leader of the pack",),
+    "Trueshot Aura": ("trueshot aura",), "Unleashed Rage": ("unleashed rage",),
+    "Ferocious Inspiration": ("ferocious inspiration",), "Battle Shout": ("battle shout",),
+    "Strength of Earth": ("strength of earth",), "Grace of Air": ("grace of air",),
+}
+BOSS_CAST_PRIORITY = {
+    ("magtheridon", "blast nova"): ("critical", "Raid-wide damage; the cube assignment must stop this cast."),
+    ("magtheridon", "shadow bolt volley"): ("high", "Hellfire Channelers can deal heavy raid-wide damage with this volley."),
+    ("magtheridon", "dark mending"): ("high", "A Channeler heal can extend the add phase; review interrupts and focus fire."),
+    ("kael'thas", "fireball"): ("critical", "The boss Fireball is a lethal tank hit and should be interrupted."),
+    ("kael'thas", "pyroblast"): ("critical", "Pyroblast is a lethal tank hit; review the Shock Barrier and kick sequence."),
+    ("illidari council", "heal"): ("high", "Lady Malande's heal can undo raid damage; review interrupt coverage."),
+}
 
 
 def decompress_combat_log(content: bytes) -> bytes:
@@ -69,8 +85,11 @@ def analyze_combat_log(content: bytes) -> dict[str, Any]:
     aura_applications: dict[tuple[Any, ...], int] = defaultdict(int)
     long_buff_intervals: list[dict[str, Any]] = []
     active_long_buffs: dict[tuple[str, str, int, str, str], dict[str, Any]] = {}
+    raid_buff_totals: dict[tuple[str, str, int, str, str], int] = defaultdict(int)
+    active_raid_buffs: dict[tuple[str, str, int, str, str], int] = {}
     damage_sources: dict[tuple[str, str, str, str, str], list[int]] = defaultdict(lambda: [0, 0])
     last_damage_by_target: dict[str, dict[str, Any]] = {}
+    pending_casts: dict[tuple[str, int], int] = {}
     last_timestamp = 0
     line_count = 0
 
@@ -104,14 +123,19 @@ def analyze_combat_log(content: bytes) -> dict[str, Any]:
                 current["debuffs"] = _debuff_rows(aura_totals, current["start"], timestamp, current["name"], pending_auras, observed_stacks, aura_applications)
                 current["armor_reduction"] = _armor_rows(current["debuffs"])
                 current["long_buffs"] = _long_buff_coverage(long_buff_intervals, active_long_buffs, current, timestamp)
+                current["raid_buffs"] = _raid_buff_rows(raid_buff_totals, active_raid_buffs, current, timestamp)
                 current["damage_sources"] = _damage_source_rows(damage_sources)
+                current["boss_casts"] = _finish_casts(pending_casts, current, timestamp)
                 pending_auras.clear()
                 aura_totals.clear()
                 observed_stacks.clear()
                 aura_applications.clear()
                 damage_sources.clear()
                 last_damage_by_target.clear()
-            current = {"id": fields[1], "name": fields[2], "start": timestamp, "end": None, "kill": None, "roster": {}, "deaths": []}
+                pending_casts.clear()
+                raid_buff_totals.clear()
+                active_raid_buffs.clear()
+            current = {"id": fields[1], "name": fields[2], "start": timestamp, "end": None, "kill": None, "roster": {}, "deaths": [], "boss_casts": []}
             encounters.append(current)
             pending_auras.clear()
             aura_totals.clear()
@@ -119,6 +143,9 @@ def analyze_combat_log(content: bytes) -> dict[str, Any]:
             aura_applications.clear()
             damage_sources.clear()
             last_damage_by_target.clear()
+            pending_casts.clear()
+            raid_buff_totals.clear()
+            active_raid_buffs.clear()
         elif current is not None and event == "ENCOUNTER_END":
             current["end"] = timestamp
             current["kill"] = fields[5] == "1" if len(fields) > 5 else None
@@ -126,7 +153,9 @@ def analyze_combat_log(content: bytes) -> dict[str, Any]:
             current["armor_reduction"] = _armor_rows(current["debuffs"])
             current["duration_seconds"] = max(1, (timestamp - current["start"]) / 1000)
             current["long_buffs"] = _long_buff_coverage(long_buff_intervals, active_long_buffs, current, timestamp)
+            current["raid_buffs"] = _raid_buff_rows(raid_buff_totals, active_raid_buffs, current, timestamp)
             current["damage_sources"] = _damage_source_rows(damage_sources)
+            current["boss_casts"] = _finish_casts(pending_casts, current, timestamp)
             current = None
             pending_auras.clear()
             aura_totals.clear()
@@ -134,6 +163,9 @@ def analyze_combat_log(content: bytes) -> dict[str, Any]:
             aura_applications.clear()
             damage_sources.clear()
             last_damage_by_target.clear()
+            pending_casts.clear()
+            raid_buff_totals.clear()
+            active_raid_buffs.clear()
         elif current is not None and event == "UNIT_DIED" and target_guid.startswith("Player-"):
             final_hit = last_damage_by_target.get(target_guid)
             if final_hit and timestamp - final_hit["timestamp"] > 2500:
@@ -143,6 +175,34 @@ def analyze_combat_log(content: bytes) -> dict[str, Any]:
                 "player": target_name,
                 "last_hit": {key: value for key, value in final_hit.items() if key != "timestamp"} if final_hit else None,
             })
+        elif current is not None and event == "SPELL_CAST_START" and source_guid.startswith(("Creature-", "Vehicle-")) and len(fields) > 10:
+            try:
+                pending_casts[(source_guid, int(fields[9]))] = timestamp
+            except ValueError:
+                pass
+        elif current is not None and event == "SPELL_CAST_SUCCESS" and source_guid.startswith(("Creature-", "Vehicle-")) and len(fields) > 10:
+            try:
+                spell_id = int(fields[9])
+            except ValueError:
+                spell_id = 0
+            ability = fields[10]
+            started = pending_casts.pop((source_guid, spell_id), None)
+            cast_ms = max(0, timestamp - started) if started else 0
+            priority, reason = _cast_priority(current["name"], source_name, ability)
+            if priority or cast_ms >= 1500:
+                current["boss_casts"].append({"timestamp_seconds": round((timestamp - current["start"]) / 1000, 1), "source": source_name,
+                                               "ability": ability, "status": "completed", "priority": priority or "review",
+                                               "reason": reason, "cast_ms": cast_ms})
+        elif current is not None and event == "SPELL_INTERRUPT" and target_guid.startswith(("Creature-", "Vehicle-")) and len(fields) > 13:
+            try:
+                pending_casts.pop((target_guid, int(fields[12])), None)
+            except ValueError:
+                pass
+            interrupted_spell = fields[13]
+            priority, reason = _cast_priority(current["name"], target_name, interrupted_spell)
+            current["boss_casts"].append({"timestamp_seconds": round((timestamp - current["start"]) / 1000, 1), "source": target_name,
+                                           "ability": interrupted_spell, "status": "interrupted", "priority": priority or "review",
+                                           "reason": reason, "interrupted_by": source_name, "cast_ms": 0})
         elif event.startswith("SPELL_AURA_") and len(fields) >= 13:
             source, target = source_guid, target_guid
             try:
@@ -150,6 +210,21 @@ def analyze_combat_log(content: bytes) -> dict[str, Any]:
             except ValueError:
                 spell_id = 0
             spell, aura_type = fields[10], fields[12]
+            if current is not None and aura_type == "BUFF" and target.startswith("Player-") and not _long_buff_family(spell):
+                family = next((name for name, aliases in IN_FIGHT_BUFFS.items() if any(alias in spell.casefold() for alias in aliases)), None)
+                if family:
+                    key = (target, target_name, spell_id, spell, source_name)
+                    if event in ("SPELL_AURA_APPLIED", "SPELL_AURA_REFRESH", "SPELL_AURA_APPLIED_DOSE"):
+                        if key in active_raid_buffs:
+                            raid_buff_totals[key] += max(0, timestamp - active_raid_buffs[key])
+                        else:
+                            raid_buff_totals.setdefault(key, 0)
+                        active_raid_buffs[key] = timestamp
+                    elif "REMOVED" in event or "BROKEN" in event:
+                        active = active_raid_buffs.pop(key, None)
+                        if active is not None:
+                            raid_buff_totals[key] += max(0, timestamp - active)
+                    continue
             if aura_type == "BUFF" and target.startswith("Player-") and _long_buff_family(spell):
                 key = (target, target_name, spell_id, spell, source)
                 if event in ("SPELL_AURA_APPLIED", "SPELL_AURA_REFRESH", "SPELL_AURA_APPLIED_DOSE"):
@@ -215,7 +290,9 @@ def analyze_combat_log(content: bytes) -> dict[str, Any]:
         current["debuffs"] = _debuff_rows(aura_totals, current["start"], last_timestamp, current["name"], pending_auras, observed_stacks, aura_applications)
         current["armor_reduction"] = _armor_rows(current["debuffs"])
         current["long_buffs"] = _long_buff_coverage(long_buff_intervals, active_long_buffs, current, last_timestamp)
+        current["raid_buffs"] = _raid_buff_rows(raid_buff_totals, active_raid_buffs, current, last_timestamp)
         current["damage_sources"] = _damage_source_rows(damage_sources)
+        current["boss_casts"] = _finish_casts(pending_casts, current, last_timestamp)
     for fight in encounters:
         if fight.get("end") and not fight.get("debuffs"):
             fight["debuffs"] = []
@@ -252,6 +329,28 @@ def _damage_event(event: str, fields: list[str]) -> tuple[str, str, int] | None:
     schools = [(mask, name) for mask, name in ((1, "Physical"), (2, "Holy"), (4, "Fire"), (8, "Nature"), (16, "Frost"), (32, "Shadow"), (64, "Arcane")) if school & mask]
     damage_type = "/".join(name for _, name in schools) or "Unknown type"
     return ability, damage_type, amount
+
+
+def _cast_priority(boss_name: str, source_name: str, ability: str) -> tuple[str | None, str | None]:
+    boss = boss_name.casefold()
+    spell = ability.casefold()
+    source = source_name.casefold()
+    for (boss_match, spell_match), (priority, reason) in BOSS_CAST_PRIORITY.items():
+        if boss_match in boss and spell_match in spell and (boss_match != "magtheridon" or spell_match == "blast nova" or "channeler" in source):
+            return priority, reason
+    return None, None
+
+
+def _finish_casts(pending: dict[tuple[str, int], int], fight: dict[str, Any], end: int) -> list[dict[str, Any]]:
+    rows = fight.setdefault("boss_casts", [])
+    for started in pending.values():
+        cast_ms = max(0, end - started)
+        if cast_ms >= 1500:
+            rows.append({"timestamp_seconds": round((started - fight["start"]) / 1000, 1), "source": "Boss or enemy",
+                         "ability": "Cast interrupted or incomplete", "status": "unknown", "priority": "review",
+                         "reason": "No matching success or interruption event was captured.", "cast_ms": cast_ms})
+    pending.clear()
+    return sorted(rows, key=lambda row: row["timestamp_seconds"])
 
 
 def _damage_source_rows(totals: dict[tuple[str, str, str, str, str], list[int]]) -> list[dict[str, Any]]:
@@ -339,6 +438,18 @@ def _long_buff_coverage(
         covered = sum(player["uptime_seconds"] > 0 for player in players)
         results.append({"ability": family, "covered_players": covered, "roster_size": len(players), "players": players})
     return results
+
+
+def _raid_buff_rows(totals: dict, active: dict, fight: dict[str, Any], end: int) -> list[dict[str, Any]]:
+    duration = max(1, end - fight["start"])
+    rows = []
+    for key, elapsed in totals.items():
+        _, target, _, spell, provider = key
+        uptime = elapsed + max(0, end - active[key]) if key in active else elapsed
+        family = next((name for name, aliases in IN_FIGHT_BUFFS.items() if any(alias in spell.casefold() for alias in aliases)), spell)
+        rows.append({"family": family, "ability": spell, "target": target, "provider": provider,
+                     "uptime_seconds": round(uptime / 1000, 1), "uptime_percent": round(100 * uptime / duration, 1)})
+    return sorted(rows, key=lambda row: (row["family"], row["target"].casefold()))
 
 
 def _armor_rows(debuffs: list[dict[str, Any]]) -> list[dict[str, Any]]:
