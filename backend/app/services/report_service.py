@@ -57,7 +57,7 @@ query HelloThereLogsReportFights($code: String!) {
 """
 
 FIGHT_ANALYSIS_QUERY = """
-query HelloThereLogsFightAnalysis($code: String!, $fightId: Int!) {
+query HelloThereLogsFightAnalysis($code: String!, $fightId: Int!__PLAYER_BUFF_VARIABLES__) {
   reportData {
     report(code: $code) {
       code
@@ -70,6 +70,7 @@ query HelloThereLogsFightAnalysis($code: String!, $fightId: Int!) {
       deaths: events(dataType: Deaths, fightIDs: [$fightId], limit: 10000, useActorIDs: true, useAbilityIDs: true) { data nextPageTimestamp }
       interrupts: table(dataType: Interrupts, fightIDs: [$fightId], viewBy: Source)
       buffUptimes: table(dataType: Buffs, fightIDs: [$fightId], viewBy: Target)
+      __PLAYER_BUFF_TABLES__
       abilityUptimes: table(dataType: Buffs, fightIDs: [$fightId], viewBy: Ability)
       debuffUptimes: table(dataType: Debuffs, fightIDs: [$fightId], viewBy: Ability)
       bossDebuffs: events(dataType: Debuffs, fightIDs: [$fightId], hostilityType: Enemies, limit: 10000, useActorIDs: true, useAbilityIDs: true) { data nextPageTimestamp }
@@ -407,7 +408,7 @@ class ReportService:
         fight = next((item for item in report["fights"] if item["fight_id"] == fight_id), None)
         if fight is None:
             raise ReportNotFoundError("Fight was not found in this report.")
-        cache_key = f"analysis:v6:{code}:{fight_id}"
+        cache_key = f"analysis:v7:{code}:{fight_id}"
         cached = self.cache.get(cache_key)
         if cached is not None:
             return cached
@@ -417,8 +418,20 @@ class ReportService:
             f"friendlyDamage{index}: events(dataType: DamageDone, fightIDs: [$fightId], sourceID: {player_id}, limit: 10000, useActorIDs: true, useAbilityIDs: true) {{ data nextPageTimestamp }}"
             for index, player_id in enumerate(player_ids)
         ) or "__typename"
-        analysis_query = FIGHT_ANALYSIS_QUERY.replace("__FRIENDLY_DAMAGE_EVENT_FIELDS__", friendly_fields)
-        data = await self.client.query(analysis_query, {"code": code, "fightId": fight_id})
+        player_buff_variables = "".join(f", $playerBuffTarget{index}: Int!" for index in range(len(player_ids)))
+        player_buff_fields = "\n".join(
+            f"playerBuff{index}: table(dataType: Buffs, fightIDs: [$fightId], hostilityType: Friendlies, targetID: $playerBuffTarget{index}, viewOptions: 16, viewBy: Target)"
+            for index in range(len(player_ids))
+        ) or "__typename"
+        analysis_query = (
+            FIGHT_ANALYSIS_QUERY
+            .replace("__PLAYER_BUFF_VARIABLES__", player_buff_variables)
+            .replace("__PLAYER_BUFF_TABLES__", player_buff_fields)
+            .replace("__FRIENDLY_DAMAGE_EVENT_FIELDS__", friendly_fields)
+        )
+        query_variables = {"code": code, "fightId": fight_id}
+        query_variables.update({f"playerBuffTarget{index}": player_id for index, player_id in enumerate(player_ids)})
+        data = await self.client.query(analysis_query, query_variables)
         raw_report = self._report_from_response(data)
         all_actors = (raw_report.get("masterData") or {}).get("actors", [])
         participant_actors = [
@@ -479,6 +492,7 @@ class ReportService:
                 "deaths": raw_report.get("deaths"),
                 "interrupts": raw_report.get("interrupts"),
                 "buff_uptimes": raw_report.get("buffUptimes"),
+                "player_buffs": {str(player_id): raw_report.get(f"playerBuff{index}") for index, player_id in enumerate(player_ids)},
                 "ability_uptimes": raw_report.get("abilityUptimes"),
                 "debuff_uptimes": raw_report.get("debuffUptimes"),
             },
