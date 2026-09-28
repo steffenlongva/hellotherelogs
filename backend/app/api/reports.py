@@ -2,12 +2,13 @@ import logging
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Path, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 
 from app.services.report_normalizer import ReportNormalizationError
 from app.services.report_parser import InvalidReportURL, extract_report_code
 from app.services.report_service import ReportNotFoundError, ReportService
+from app.services.combat_log import MAX_LOG_BYTES, analyze_combat_log
 from app.services.wcl_client import WCLAPIError, WCLConfigurationError
 
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -45,6 +46,20 @@ async def parse_report_url(payload: ParseReportRequest) -> dict[str, str]:
         return {"report_code": extract_report_code(payload.report_url)}
     except InvalidReportURL as exc:
         _raise_api_error(exc)
+
+
+@router.post("/local/analyze")
+async def analyze_local_log(file: UploadFile = File(...)) -> dict[str, Any]:
+    if not file.filename or not file.filename.lower().endswith((".txt", ".log")):
+        raise HTTPException(status_code=422, detail="Choose a WoW combat log .txt or .log file.")
+    content = await file.read(MAX_LOG_BYTES + 1)
+    await file.close()
+    try:
+        result = analyze_combat_log(content)
+        result["file_name"] = file.filename
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=413 if len(content) > MAX_LOG_BYTES else 422, detail=str(exc)) from exc
 
 
 @router.get("/{report_code}")
