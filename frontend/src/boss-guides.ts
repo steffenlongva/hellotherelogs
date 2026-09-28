@@ -28,6 +28,36 @@ export const BOSS_GUIDES: BossGuide[] = [
     { name: 'Shadow Nova', danger: 'position', summary: 'Close-range knockback and shadow damage; ranged players should stay out of its radius.' },
     { name: 'Infernal / Hellfire', danger: 'position', summary: 'Infernals land in the room and create damaging zones; reposition the raid as space is lost.' },
   ] },
+  { aliases: ['rage winterchill', 'winterchill'], era: 'TBC', raid: 'Hyjal Summit', summary: 'Single-phase lich encounter after the wave event. Random Icebolt targets need fast healing; players must leave Death and Decay.', health: '~2 million (historical TBC NPC estimate)', healthNote: 'Approximate historical estimate, not measured from the selected report; verify against the deployed TBC build.', source: 'https://www.wowhead.com/tbc/guide/rage-winterchill-hyjal-summit-strategy-burning-crusade-classic', abilities: [
+    { name: 'Icebolt', danger: 'raid', summary: 'Random target takes 4,250–5,750 Frost damage, then 2,500 damage per second for 4 seconds while stunned.' },
+    { name: 'Death and Decay', danger: 'position', summary: 'Ground area deals 15% of each player’s maximum health as Shadow damage per second; move out quickly.' },
+    { name: 'Frost Nova', danger: 'raid', summary: 'Nearby players are rooted and take about 2,775 Frost damage; dispel/positioning can affect the follow-up.' },
+    { name: 'Frost Armor', danger: 'tank', summary: 'Increases the boss’s armor and frost resistance and slows melee attackers.' },
+  ] },
+  { aliases: ['anetheron'], era: 'TBC', raid: 'Hyjal Summit', summary: 'Spread healers and ranged players against Carrion Swarm; assign an off-tank and healer to each Infernal.', health: 'Mode-specific', healthNote: 'A reliable, mode-matched maximum-health figure is not included in this report.', source: 'https://www.wowhead.com/tbc/guide/anetheron-hyjal-summit-strategy-burning-crusade-classic', abilities: [
+    { name: 'Carrion Swarm', danger: 'raid', summary: 'Cone hits for about 4,250 Shadow damage and reduces healing done by affected players by 75% for 20 seconds.' },
+    { name: 'Inferno', danger: 'tank', summary: 'Summons a Towering Infernal at a random player. An off-tank should pick it up quickly; its aura deals heavy fire damage.' },
+    { name: 'Sleep', danger: 'raid', summary: 'Sleeps three random players; damage wakes them, so watch for overlapping Infernal damage.' },
+    { name: 'Vampiric Aura', danger: 'tank', summary: 'Anetheron heals from melee damage he deals. A healing-reduction effect limits this sustain.' },
+  ] },
+  { aliases: ["kaz'rogal", 'kazrogal'], era: 'TBC', raid: 'Hyjal Summit', summary: 'Mana users manage the escalating Mark drain while the raid handles a frontal cleave and close-range stun.', health: 'Mode-specific', healthNote: 'A reliable, mode-matched maximum-health figure is not included in this report.', source: 'https://www.wowhead.com/tbc/guide/kazrogal-hyjal-summit-strategy-burning-crusade-classic', abilities: [
+    { name: 'Mark of Kaz’rogal', danger: 'raid', summary: 'Drains 600 mana per second for 5 seconds. Players unable to pay the drain explode for about 10,213–11,287 damage in a 15-yard radius.' },
+    { name: 'War Stomp', danger: 'raid', summary: 'Nearby players and NPCs are stunned for 5 seconds and take about 2,000 damage.' },
+    { name: 'Malevolent Cleave', danger: 'position', summary: 'Frontal cleave is split among targets hit; keep the raid out of the boss’s front.' },
+  ] },
+  { aliases: ['azgalor'], era: 'TBC', raid: 'Hyjal Summit', summary: 'Tank swaps and add pickup matter while Doom marks a player for death; position the raid to control Rain of Fire.', health: 'Mode-specific', healthNote: 'A reliable, mode-matched maximum-health figure is not included in this report.', source: 'https://www.wowhead.com/tbc/guide/azgalor-hyjal-summit-strategy-burning-crusade-classic', abilities: [
+    { name: 'Doom', danger: 'raid', summary: 'Marks a random player; the target dies after 20 seconds unless the encounter response removes or transfers the threat.' },
+    { name: 'Rain of Fire', danger: 'position', summary: 'Ground-targeted fire damage; move out and avoid carrying the effect through the raid.' },
+    { name: 'Howl of Azgalor', danger: 'raid', summary: 'Silences the raid and can interrupt healing during heavy tank damage.' },
+    { name: 'Doomguard', danger: 'tank', summary: 'A Doomguard joins the fight; an assigned off-tank should control it promptly.' },
+  ] },
+  { aliases: ['archimonde'], era: 'TBC', raid: 'Hyjal Summit', summary: 'Survival-focused single-target fight. Fear can send players into Doomfire; Air Burst requires the Tears of the Goddess to prevent lethal falling damage.', health: '~4.5–4.9 million (historical estimates)', healthNote: 'Published historical estimates vary. Treat this as a rough reference only; the report does not provide maximum boss health.', source: 'https://www.wowhead.com/tbc/guide/archimonde-hyjal-summit-strategy-burning-crusade-classic', abilities: [
+    { name: 'Doomfire', danger: 'position', summary: 'Persistent fire follows a player; standing in it deals about 2,400 Fire damage per second and applies a damaging debuff.' },
+    { name: 'Fear', danger: 'raid', summary: 'Raid-wide fear lasts about 8 seconds. Fear protection and space away from Doomfire reduce chain deaths.' },
+    { name: 'Air Burst', danger: 'raid', summary: 'Target and nearby players take about 3,000 Nature damage and are launched; use Tears of the Goddess to survive the fall.' },
+    { name: 'Grip of the Legion', danger: 'raid', summary: 'Curse deals about 2,500 Shadow damage every 2 seconds; decurse quickly.' },
+    { name: 'Finger of Death', danger: 'tank', summary: 'If no one is in melee range, a random player takes about 20,000 Shadow damage.' },
+  ] },
   { aliases: ['ragnaros'], era: 'Classic', raid: 'Molten Core', summary: 'Fire-focused encounter with knockbacks, raid control, and a Son of Flame intermission.', health: 'Version-specific', healthNote: 'Classic/Seasonal variants do not share one reliable health value; see the NPC page for its displayed mode.', source: 'https://www.wowhead.com/classic/guide/ragnaros-molten-core-strategy-wow-classic', abilities: [
     { name: 'Wrath of Ragnaros', danger: 'tank', summary: 'Fire knockback against nearby targets; tank positioning and fire resistance affect the response.' },
     { name: 'Lava Burst', danger: 'raid', summary: 'Ranged fire attack against mana users; spread and heal the affected players.' },
