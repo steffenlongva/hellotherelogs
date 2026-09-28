@@ -93,9 +93,17 @@ async function fetchBenchmarks(code: string, fightId: number, strictness: string
 
 async function uploadCombatLog(file: File): Promise<LocalLog> {
   const body = new FormData()
-  body.append('file', file)
+  let uploadFile = file
+  let uploadName = file.name
+  if (file.size > 10 * 1024 * 1024) {
+    if (typeof CompressionStream === 'undefined') throw new Error('This browser cannot compress a large log. Try a current version of Chrome, Edge, or Firefox.')
+    const stream = file.stream().pipeThrough(new CompressionStream('gzip'))
+    uploadFile = new File([await new Response(stream).blob()], `${file.name}.gz`, { type: 'application/gzip' })
+    uploadName = uploadFile.name
+  }
+  body.append('file', uploadFile, uploadName)
   const response = await fetch('/api/reports/local/analyze', { method: 'POST', body })
-  const payload = await response.json()
+  const payload = await response.json().catch(() => ({ detail: `Upload server returned a non-JSON response (HTTP ${response.status}). Large logs are compressed before upload; check the network/proxy size limit if this persists.` }))
   if (!response.ok) throw new Error(payload.detail ?? 'Could not analyze this combat log.')
   return payload
 }
@@ -385,7 +393,7 @@ function HomePage() {
       </form>
       <div className="panel-foot"><span>Paste a public Fresh report link to begin.</span><span>PRIVATE BY DESIGN</span></div></> : <>
       <form className="report-form" onSubmit={async (event) => { event.preventDefault(); const file = (event.currentTarget.elements.namedItem('combat-log') as HTMLInputElement).files?.[0]; if (!file) return; setLocalLoading(true); setLocalError(''); setLocalLog(null); try { setLocalLog(await uploadCombatLog(file)) } catch (err) { setLocalError(err instanceof Error ? err.message : 'Could not analyze this combat log.') } finally { setLocalLoading(false) } }}>
-        <label htmlFor="combat-log">WOW ADVANCED COMBAT LOG (.TXT OR .LOG, UP TO 160 MB)</label><div className="input-row"><input id="combat-log" name="combat-log" type="file" accept=".txt,.log,text/plain" required /><button type="submit" disabled={localLoading}>{localLoading ? <LoaderCircle className="spin" size={15} /> : 'ANALYZE FILE'} {!localLoading && <ArrowUpRight size={15} />}</button></div>{localError && <p className="form-error" role="alert">{localError}</p>}
+        <label htmlFor="combat-log">WOW ADVANCED COMBAT LOG (.TXT OR .LOG, UP TO 160 MB · LARGE FILES COMPRESSED)</label><div className="input-row"><input id="combat-log" name="combat-log" type="file" accept=".txt,.log,text/plain" required /><button type="submit" disabled={localLoading}>{localLoading ? <LoaderCircle className="spin" size={15} /> : 'ANALYZE FILE'} {!localLoading && <ArrowUpRight size={15} />}</button></div>{localError && <p className="form-error" role="alert">{localError}</p>}
       </form><div className="panel-foot"><span>Analysis runs locally on this server. The file is not sent to Warcraft Logs.</span><span>UPLOAD</span></div>
       </>}
     </section>

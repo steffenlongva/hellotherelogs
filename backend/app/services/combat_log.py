@@ -1,4 +1,5 @@
 import csv
+import gzip
 import io
 import re
 from collections import defaultdict
@@ -15,6 +16,17 @@ ARMOR_REDUCTION = {
     "Curse of Recklessness": 800,
 }
 STACKING_ARMOR_REDUCTION = {"Sunder Armor": 520}
+
+
+def decompress_combat_log(content: bytes) -> bytes:
+    try:
+        with gzip.GzipFile(fileobj=io.BytesIO(content)) as compressed:
+            expanded = compressed.read(MAX_LOG_BYTES + 1)
+    except (gzip.BadGzipFile, EOFError, OSError) as exc:
+        raise ValueError("The compressed combat log is invalid or incomplete.") from exc
+    if len(expanded) > MAX_LOG_BYTES:
+        raise ValueError("Log file exceeds the 160 MB uncompressed upload limit.")
+    return expanded
 
 
 def _timestamp(line: str) -> int | None:
