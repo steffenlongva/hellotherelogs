@@ -39,7 +39,7 @@ type Report = {
   fights: Fight[]
 }
 type Actor = { id: number; name: string; type: string; subType: string | null; specName?: string | null }
-type FightAnalysis = { fight: Fight; tables: Record<string, unknown>; events: Record<string, unknown>; player_details: unknown; actors: Actor[]; enemy_actors?: Actor[]; rankings?: { recent_parses: unknown; best_rankings: unknown } }
+type FightAnalysis = { fight: Fight; tables: Record<string, unknown>; events: Record<string, unknown>; player_details: unknown; actors: Actor[]; enemy_actors?: Actor[]; abilities?: Array<{ gameID?: number; name: string }>; rankings?: { recent_parses: unknown; best_rankings: unknown } }
 type BenchmarkCandidate = { report_code: string; fight_id: number; title: string | null; guild: string | null; duration_seconds: number | null; fight_percentage?: number | null; rank_percent: number | null; composition_similarity: number | null; average_item_level: number | null; item_level_difference: number | null; matched_specs?: string[]; url: string }
 type BenchmarkReference = { report_code: string; fight_id: number; title: string | null; fight: Fight; actors: Actor[]; player_specs: Record<string, string>; tables: Record<string, unknown>; events: Record<string, unknown>; player_details?: unknown }
 type Benchmarks = { status: 'available' | 'empty' | 'unavailable'; encounter: string | null; strictness: string; cohort_source: string; source: string; sample_size: number; match_basis: string[]; limitations: string[]; candidates: BenchmarkCandidate[]; reference_analyses: BenchmarkReference[] }
@@ -214,6 +214,25 @@ function actorName(row: Record<string, unknown>, role?: 'source' | 'target', act
   if (typeof value === 'string' && value.length) return value
   const id = role ? actorId(row, role) : null
   return actors.find((actor) => actor.id === id)?.name ?? 'Unknown'
+}
+
+function eventAbilityName(row: Record<string, unknown>, abilities: Array<{ gameID?: number; name: string }> = []): string {
+  const nestedAbility = isRecord(row.ability) ? row.ability : null
+  const directName = nestedAbility?.name ?? row.abilityName ?? row.name
+  if (typeof directName === 'string' && directName.length) return directName
+  const abilityId = Number(row.abilityGameID ?? row.abilityGameId ?? row.abilityID ?? row.abilityId ?? nestedAbility?.guid ?? nestedAbility?.id)
+  const match = abilities.find((ability) => Number(ability.gameID) === abilityId)
+  return match?.name ?? (Number.isFinite(abilityId) ? `Ability ${abilityId}` : 'Unknown ability')
+}
+
+function enemyDamageAbilityNames(value: unknown, enemies: Actor[]): string[] {
+  const enemyIds = new Set(enemies.map((actor) => actor.id))
+  return tableRows(value).filter((row) => enemyIds.has(actorId(row) ?? -1)).flatMap((row) => Array.isArray(row.abilities) ? row.abilities.filter(isRecord).map((ability) => String(ability.name ?? '')).filter(Boolean) : [])
+}
+
+function guideAbilityMatch(observed: string, guideName: string): boolean {
+  const observedName = observed.toLowerCase().replace(/[^a-z0-9]/g, '')
+  return guideName.split(/[\/,]/).map((part) => part.toLowerCase().replace(/[^a-z0-9]/g, '')).some((term) => term.length > 3 && (observedName.includes(term) || term.includes(observedName)))
 }
 
 function rowForActor(value: unknown, actor: Actor, role?: 'source' | 'target'): Record<string, unknown> | undefined {
@@ -517,6 +536,7 @@ function ReportPage({ code }: { code: string }) {
   const effectiveBenchmarkSource = analysis.data?.fight.kill === false ? 'progression' : benchmarkSource
   const benchmarks = useQuery({ queryKey: ['fight-benchmarks', code, analysisFightId, benchmarkStrictness, effectiveBenchmarkSource], queryFn: () => fetchBenchmarks(code, analysisFightId as number, benchmarkStrictness, effectiveBenchmarkSource), enabled: analysisFightId !== null, retry: 1 })
   const playerStats = useMemo(() => analysis.data ? makePlayerStats(analysis.data) : [], [analysis.data])
+  const encounterActors = analysis.data ? [...analysis.data.actors, ...(analysis.data.enemy_actors ?? [])] : []
   const deathEvents = analysis.data ? tableRows(analysis.data.events.deaths) : []
   const interruptEvents = analysis.data ? tableRows(analysis.data.events.interrupts) : []
   const composition = useMemo(() => {
@@ -573,8 +593,8 @@ function ReportPage({ code }: { code: string }) {
             <article className="overview-card composition-card"><span className="overview-icon tint-mint"><Swords size={17} /></span><div><strong>{playerStats.length}</strong><span>Raid roster</span></div><div className="comp-bars">{composition.map(([name, count]) => <span key={name} title={`${name}: ${count}`}><i style={{ width: `${100 * count / Math.max(1, playerStats.length)}%` }} />{name}<b>{count}</b></span>)}</div></article>
           </section>
           <TimelineCard deaths={deathEvents} interrupts={interruptEvents} analysis={analysis.data} />
-          <BossReferenceCard fightName={analysis.data.fight.name} durationMs={analysis.data.fight.duration_ms} casts={tableRows(analysis.data.events.boss_casts).filter((row) => String(row.type ?? '').toLowerCase() === 'cast').map((row) => { const ability = String((isRecord(row.ability) ? row.ability.name : undefined) ?? row.abilityName ?? row.name ?? 'Unknown cast'); const source = actorName(row, 'source', analysis.data.actors); const priority = castPriority(analysis.data.fight.name, source, ability); return { timestamp_seconds: Math.max(0, (Number(row.timestamp) - analysis.data.fight.start_time_ms) / 1000), source, ability, status: 'completed' as const, priority: priority.priority, reason: priority.reason, cast_ms: numericValue(row, ['castTime', 'duration']) ?? 0 } })} damageSources={playerStats.flatMap((player) => player.damageTakenSources)} />
-          <BossCastCard fightName={analysis.data.fight.name} durationMs={analysis.data.fight.duration_ms} startTimeMs={analysis.data.fight.start_time_ms} casts={analysis.data.events.boss_casts} interrupts={analysis.data.events.interrupts} actors={analysis.data.actors} />
+          <BossReferenceCard fightName={analysis.data.fight.name} durationMs={analysis.data.fight.duration_ms} casts={tableRows(analysis.data.events.boss_casts).filter((row) => String(row.type ?? '').toLowerCase() === 'cast').map((row) => { const ability = eventAbilityName(row, analysis.data.abilities); const source = actorName(row, 'source', encounterActors); const priority = castPriority(analysis.data.fight.name, source, ability); return { timestamp_seconds: Math.max(0, (Number(row.timestamp) - analysis.data.fight.start_time_ms) / 1000), source, ability, status: 'completed' as const, priority: priority.priority, reason: priority.reason, cast_ms: numericValue(row, ['castTime', 'duration']) ?? 0 } })} damageSources={playerStats.flatMap((player) => player.damageTakenSources)} observedDamageAbilities={enemyDamageAbilityNames(analysis.data.tables.damage_taken, analysis.data.enemy_actors ?? [])} />
+          <BossCastCard fightName={analysis.data.fight.name} durationMs={analysis.data.fight.duration_ms} startTimeMs={analysis.data.fight.start_time_ms} casts={analysis.data.events.boss_casts} interrupts={analysis.data.events.interrupts} actors={encounterActors} abilities={analysis.data.abilities} />
           <BenchmarkCard benchmarks={benchmarks.data} analysis={analysis.data} players={playerStats} isLoading={benchmarks.isLoading} error={benchmarks.error?.message} strictness={benchmarkStrictness} onStrictnessChange={setBenchmarkStrictness} source={effectiveBenchmarkSource} onSourceChange={setBenchmarkSource} />
           <LearningPlan fightName={analysis.data.fight.name} players={playerStats} deaths={deathEvents} interruptCount={interruptEvents.length} interruptsAvailable={eventDataAvailable(analysis.data.events.interrupts)} deathsAvailable={eventDataAvailable(analysis.data.events.deaths)} />
           <div className="leader-grid">
@@ -846,10 +866,11 @@ function TimelineCard({ deaths, interrupts, analysis }: { deaths: Array<Record<s
   </article>
 }
 
-function BossReferenceCard({ fightName, durationMs, casts, damageSources }: { fightName: string; durationMs: number; casts: LocalBossCast[]; damageSources: LocalDamageSource[] }) {
+function BossReferenceCard({ fightName, durationMs, casts, damageSources, observedDamageAbilities = [] }: { fightName: string; durationMs: number; casts: LocalBossCast[]; damageSources: LocalDamageSource[]; observedDamageAbilities?: string[] }) {
   const guide: BossGuide | undefined = bossGuideFor(fightName)
   const observedCasts = new Map<string, { count: number; stopped: number }>()
   casts.forEach((cast) => { const row = observedCasts.get(cast.ability) ?? { count: 0, stopped: 0 }; row.count += 1; if (cast.status === 'interrupted') row.stopped += 1; observedCasts.set(cast.ability, row) })
+  const allObservedDamageAbilities = [...observedDamageAbilities, ...damageSources.map((row) => row.ability)]
   const incoming = new Map<string, { ability: string; amount: number; hits: number; source: string }>()
   damageSources.forEach((row) => { if (!row.ability || row.amount <= 0) return; const key = `${row.source}:${row.ability}`; const item = incoming.get(key) ?? { ability: row.ability, amount: 0, hits: 0, source: row.source }; item.amount += row.amount; item.hits += row.hits; incoming.set(key, item) })
   const incomingRows = [...incoming.entries()].map(([key, row]) => ({ key, ...row })).sort((a, b) => b.amount - a.amount).slice(0, 6)
@@ -858,7 +879,7 @@ function BossReferenceCard({ fightName, durationMs, casts, damageSources }: { fi
   const tbcSearch = `https://www.wowhead.com/tbc/search?q=${encodeURIComponent(fightName)}`
   return <article className="analysis-card boss-reference-card"><div className="card-heading"><div><span className="guide-kicker">ENCOUNTER FIELD GUIDE</span><h3>{fightName}</h3><p>{guide ? `${guide.era} · ${guide.raid}` : 'Classic / Burning Crusade encounter'}</p></div><span>{guide ? 'REFERENCE + LOG DATA' : 'LOG DATA'}</span></div>
     <div className="boss-guide-summary"><div><b>Encounter</b><p>{guide?.summary ?? 'Encounter reference is available from the linked database. This panel still summarizes abilities and incoming damage actually recorded for this selected pull.'}</p></div><div><b>Boss health</b><p>{guide?.health ?? 'Not reported in the uploaded combat-log encounter header.'}<small>{guide?.healthNote ?? 'Health varies by game version and raid tuning; open the matching guide/NPC record for the applicable value.'}</small></p></div></div>
-    {guide?.abilities.length ? <section className="boss-guide-abilities"><h4>Key abilities and what they threaten</h4><div>{guide.abilities.map((ability) => { const seen = observedCasts.get(ability.name); return <article className={`guide-ability ${ability.danger}`} key={ability.name}><span>{ability.danger === 'tank' ? 'TANK' : ability.danger === 'raid' ? 'RAID DAMAGE' : ability.danger === 'position' ? 'POSITIONING' : 'INTERRUPT'}</span><div><b>{ability.name}</b><p>{ability.summary}</p></div><small>{seen ? `${seen.count} logged${seen.stopped ? ` · ${seen.stopped} stopped` : ''}` : 'Not observed in cast events'}</small></article>})}</div></section> : <section className="boss-guide-abilities"><h4>Abilities observed in this pull</h4>{observedCasts.size ? <div>{[...observedCasts.entries()].sort((a, b) => b[1].count - a[1].count).slice(0, 8).map(([ability, row]) => <article className="guide-ability raid" key={ability}><span>CASTS</span><div><b>{ability}</b><p>{row.count} recorded cast events in this encounter.</p></div><small>{row.stopped} stopped</small></article>)}</div> : <p className="analysis-empty">No enemy cast events were available for this pull.</p>}</section>}
+    {guide?.abilities.length ? <section className="boss-guide-abilities"><h4>Key abilities and what they threaten</h4><div>{guide.abilities.map((ability) => { const matchedCasts = [...observedCasts.entries()].filter(([name]) => guideAbilityMatch(name, ability.name)); const castCount = matchedCasts.reduce((sum, [, row]) => sum + row.count, 0); const stoppedCount = matchedCasts.reduce((sum, [, row]) => sum + row.stopped, 0); const damageNames = [...new Set(allObservedDamageAbilities.filter((name) => guideAbilityMatch(name, ability.name)))]; const seen = castCount > 0 || damageNames.length > 0; return <article className={`guide-ability ${ability.danger}`} key={ability.name}><span>{ability.danger === 'tank' ? 'TANK' : ability.danger === 'raid' ? 'RAID DAMAGE' : ability.danger === 'position' ? 'POSITIONING' : 'INTERRUPT'}</span><div><b>{ability.name}</b><p>{ability.summary}</p></div><small>{castCount ? `${castCount} casts${stoppedCount ? ` · ${stoppedCount} stopped` : ''}` : seen ? 'Damage ability observed' : 'Not observed in cast or damage events'}</small></article>})}</div></section> : <section className="boss-guide-abilities"><h4>Abilities observed in this pull</h4>{observedCasts.size ? <div>{[...observedCasts.entries()].sort((a, b) => b[1].count - a[1].count).slice(0, 8).map(([ability, row]) => <article className="guide-ability raid" key={ability}><span>CASTS</span><div><b>{ability}</b><p>{row.count} recorded cast events in this encounter.</p></div><small>{row.stopped} stopped</small></article>)}</div> : <p className="analysis-empty">No enemy cast events were available for this pull.</p>}</section>}
     <section className="boss-observed-damage"><h4>Largest recorded incoming abilities</h4>{incomingRows.length ? <div>{incomingRows.map((row) => <div className="boss-observed-row" key={row.key}><span><b>{row.ability}</b><small>{row.source} · {row.hits || '—'} hits</small></span><i><em style={{ width: `${Math.max(2, 100 * row.amount / maximumDamage)}%` }} /></i><strong>{row.amount.toLocaleString()}</strong></div>)}</div> : <p className="analysis-empty">No per-ability damage-taken breakdown was available.</p>}</section>
     <footer className="boss-guide-links">{guide ? <a href={guide.source} target="_blank" rel="noreferrer">Open encounter strategy source <ExternalLink size={12} /></a> : <><a href={classicSearch} target="_blank" rel="noreferrer">Wowhead Classic lookup <ExternalLink size={12} /></a><a href={tbcSearch} target="_blank" rel="noreferrer">Wowhead TBC lookup <ExternalLink size={12} /></a></>}<small>{(durationMs / 1000).toFixed(0)}s selected fight · log observations are pull-specific; guide notes are reference material.</small></footer>
   </article>
@@ -954,20 +975,21 @@ function castPriority(fightName: string, source: string, ability: string): { pri
   return { priority: 'review', reason: 'Review this cast against the encounter plan and assigned response.' }
 }
 
-function BossCastCard({ fightName, durationMs, startTimeMs = 0, casts, interrupts, actors, localCasts }: {
+function BossCastCard({ fightName, durationMs, startTimeMs = 0, casts, interrupts, actors, abilities = [], localCasts }: {
   fightName: string
   durationMs: number
   startTimeMs?: number
   casts: unknown
   interrupts: unknown
   actors: Actor[]
+  abilities?: Array<{ gameID?: number; name: string }>
   localCasts?: LocalBossCast[]
 }) {
   const normalized = localCasts
     ? localCasts.map((cast) => ({ ...cast, timeMs: cast.timestamp_seconds * 1000 }))
     : [
       ...tableRows(casts).filter((row) => String(row.type ?? '').toLowerCase() === 'cast').map((row) => {
-        const ability = String((isRecord(row.ability) ? row.ability.name : undefined) ?? row.abilityName ?? row.name ?? 'Unknown cast')
+        const ability = eventAbilityName(row, abilities)
         const source = actorName(row, 'source', actors)
         const status = String(row.type ?? '').toLowerCase().includes('fail') ? 'unknown' as const : 'completed' as const
         return { ability, source, status, timeMs: Number(row.timestamp) - startTimeMs, cast_ms: numericValue(row, ['castTime', 'duration']) ?? 0, interrupted_by: undefined, ...castPriority(fightName, source, ability) }
