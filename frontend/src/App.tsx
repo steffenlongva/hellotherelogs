@@ -227,6 +227,30 @@ function eventAbilityName(row: Record<string, unknown>, abilities: Array<{ gameI
   return match?.name ?? (Number.isFinite(abilityId) ? `Ability ${abilityId}` : 'Unknown ability')
 }
 
+function deathKillingAbilityName(row: Record<string, unknown>, abilities: NonNullable<FightAnalysis['abilities']> = []): string | null {
+  const killingAbility = row.killingAbility ?? row.killingBlow
+  if (typeof killingAbility === 'string' && killingAbility) return killingAbility
+  if (isRecord(killingAbility)) {
+    const name = eventAbilityName({ ability: killingAbility }, abilities)
+    if (name !== 'Unknown ability') return name
+  }
+  const killingAbilityId = row.killingAbilityGameID ?? row.killingAbilityGameId ?? row.killingAbilityID ?? row.killingAbilityId
+  if (killingAbilityId !== null && killingAbilityId !== undefined) {
+    const name = eventAbilityName({ abilityGameID: killingAbilityId }, abilities)
+    if (name !== 'Unknown ability') return name
+  }
+  const ability = eventAbilityName(row, abilities)
+  return ability === 'Unknown ability' || ability === 'Ability 0' || ability === 'Death' ? null : ability
+}
+
+function deathKillerName(row: Record<string, unknown>, actors: Actor[]): string {
+  const killer = isRecord(row.killer) ? row.killer : null
+  const directName = row.killerName ?? killer?.name
+  if (typeof directName === 'string' && directName) return directName
+  const killerId = Number(row.killerID ?? row.killerId ?? killer?.id)
+  return Number.isFinite(killerId) ? actors.find((actor) => actor.id === killerId)?.name ?? 'Unknown' : actorName(row, 'source', actors)
+}
+
 function enemyDamageAbilityNames(value: unknown, enemies: Actor[]): string[] {
   const enemyIds = new Set(enemies.map((actor) => actor.id))
   return tableRows(value).filter((row) => enemyIds.has(actorId(row) ?? -1)).flatMap((row) => Array.isArray(row.abilities) ? row.abilities.filter(isRecord).map((ability) => String(ability.name ?? '')).filter(Boolean) : [])
@@ -855,14 +879,14 @@ function TimelineCard({ deaths, interrupts, analysis }: { deaths: Array<Record<s
       <div className="timeline-legend"><span><i className="death" /> Death</span><span><i className="interrupt" /> Interrupt landed</span>{!interruptsAvailable && <small>Interrupt data unavailable</small>}</div>
       <div className="moment-list">{events.map(({ row, kind }, index) => {
         const relative = Math.max(0, Number(row.timestamp) - fight.start_time_ms)
-        const ability = isRecord(row.killingAbility) ? row.killingAbility.name : isRecord(row.ability) ? row.ability.name : row.abilityName
-        const source = actorName(row, kind === 'death' ? 'source' : 'target', analysis.actors)
+        const ability = kind === 'death' ? deathKillingAbilityName(row, analysis.abilities) : eventAbilityName(row, analysis.abilities)
+        const source = kind === 'death' ? deathKillerName(row, [...analysis.actors, ...(analysis.enemy_actors ?? [])]) : actorName(row, 'target', analysis.actors)
         const actor = actorName(row, kind === 'death' ? 'target' : 'source', analysis.actors)
         const killingAbility = isRecord(row.killingAbility) ? row.killingAbility : null
         const damageType = damageSchoolLabel(row.damageType ?? row.school ?? killingAbility?.school ?? killingAbility?.schoolName)
         const amount = numericValue(row, ['amount', 'damage', 'killingBlow'])
-        const eventSummary = typeof ability === 'string' ? `${ability}${damageType ? ` · ${damageType} damage` : ''}` : kind === 'death' ? 'Killing ability unavailable' : 'Interrupt landed'
-        return <div className="moment-row" key={`${kind}-row-${index}`}><time>{formatDuration(relative)}</time><span className={`moment-tag ${kind}`}>{kind === 'death' ? 'DEATH' : 'KICK'}</span><strong>{actor}</strong><span>{eventSummary}</span>{kind === 'death' && <small>{source !== 'Unknown' ? `Source: ${source}` : 'Damage source unavailable'}{amount === null ? '' : ` · ${formatMetric(amount)} damage`}</small>}</div>
+        const eventSummary = ability ? `${ability}${damageType ? ` · ${damageType} damage` : ''}` : kind === 'death' ? 'Killing ability unavailable' : 'Interrupt landed'
+        return <div className="moment-row" key={`${kind}-row-${index}`}><time>{formatDuration(relative)}</time><span className={`moment-tag ${kind}`}>{kind === 'death' ? 'DEATH' : 'KICK'}</span><strong>{actor}</strong><span>{eventSummary}</span>{kind === 'death' && <small>{source !== 'Unknown' ? `Killer: ${source}` : 'Killer unavailable'}{amount === null ? '' : ` · ${formatMetric(amount)} damage`}</small>}</div>
       })}</div>
     </>}
     <p className="data-note">Death rows use Warcraft Logs’ recorded killing ability and damage school when available. The damage taken review shows the encounter’s largest recorded abilities for each player.</p>
