@@ -29,6 +29,8 @@ class MemoryCache:
 
 class BenchmarkClient:
     def __init__(self):
+        self.analysis_query: str | None = None
+        self.analysis_variables: dict[str, Any] | None = None
         self.peer_reports = {
             ("PeerA123", 10): _peer_report(10, "Warrior", "Priest", 70),
             ("PeerB123", 20): _peer_report(20, "Mage", "Druid", 82),
@@ -38,10 +40,14 @@ class BenchmarkClient:
         if query == REPORT_QUERY:
             return {"reportData": {"report": _selected_report()}}
         if query.lstrip().startswith("query HelloThereLogsFightAnalysis"):
+            self.analysis_query = query
+            self.analysis_variables = variables
             return {"reportData": {"report": {
                 "fights": [_selected_report()["fights"][0]],
                 "masterData": {"actors": [*_actors("Warrior", "Priest"), {"id": 99, "name": "Test Boss", "type": "NPC"}]},
                 "bossDebuffs": {"data": [{"type": "applydebuff", "sourceID": 11, "targetID": 99, "timestamp": 11_000, "ability": {"name": "Sunder Armor"}}], "nextPageTimestamp": None},
+                "playerBuff0": {"data": {"auras": [{"name": "Well Fed", "guid": 33254, "totalUptime": 60_000}] }},
+                "playerBuff1": {"data": {"auras": []}},
                 "friendlyDamage0": {"data": [], "nextPageTimestamp": None},
                 "friendlyDamage1": {"data": [], "nextPageTimestamp": None},
                 "playerDetails": {"players": [
@@ -147,6 +153,12 @@ def test_fight_analysis_returns_hostile_debuff_events_and_enemy_actor_names() ->
 
     assert analysis["events"]["boss_debuffs"]["data"][0]["ability"]["name"] == "Sunder Armor"
     assert analysis["enemy_actors"] == [{"id": 99, "name": "Test Boss", "type": "NPC"}]
+    assert analysis["tables"]["player_buffs"]["11"]["data"]["auras"][0]["name"] == "Well Fed"
+    assert "targetID: $playerBuffTarget0" in client.analysis_query
+    assert "hostilityType: Friendlies" in client.analysis_query
+    assert "viewOptions: 16, viewBy: Target" in client.analysis_query
+    assert client.analysis_variables["playerBuffTarget0"] == 11
+    assert client.analysis_variables["playerBuffTarget1"] == 12
 
 
 def test_benchmark_helpers_use_actor_class_and_item_data() -> None:

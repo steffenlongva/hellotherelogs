@@ -44,6 +44,7 @@ type BenchmarkCandidate = { report_code: string; fight_id: number; title: string
 type BenchmarkReference = { report_code: string; fight_id: number; title: string | null; fight: Fight; actors: Actor[]; player_specs: Record<string, string>; tables: Record<string, unknown>; events: Record<string, unknown>; player_details?: unknown }
 type Benchmarks = { status: 'available' | 'empty' | 'unavailable'; encounter: string | null; strictness: string; cohort_source: string; source: string; sample_size: number; match_basis: string[]; limitations: string[]; candidates: BenchmarkCandidate[]; reference_analyses: BenchmarkReference[] }
 type AbilityUptime = { name: string; percent: number | null }
+type PreparationAura = { name: string; source: string; selfApplied: boolean }
 type SpellUse = { name: string; count: number }
 type LocalDebuff = { spell_id: number; ability: string; target: string; provider: string; provider_is_player: boolean; target_is_boss: boolean; uptime_seconds: number; uptime_percent: number; fight_duration_seconds: number; applications: number; armor_reduction: number; armor_reduction_note?: string }
 type LocalBuffPlayer = { id: string; name: string; uptime_seconds: number; uptime_percent: number; present_before_pull: boolean; status: string }
@@ -52,7 +53,7 @@ type LocalDamageSource = { source: string; ability: string; damage_type: string;
 type LocalBossCast = { timestamp_seconds: number; source: string; ability: string; status: 'completed' | 'interrupted' | 'unknown'; priority: 'critical' | 'high' | 'review'; reason: string | null; interrupted_by?: string; cast_ms: number }
 type LocalEncounter = { id: string; name: string; kill: boolean | null; duration_seconds: number; roster: Array<{ id: string; name: string }>; debuffs: LocalDebuff[]; long_buffs: LocalBuff[]; raid_buffs: Array<{ family: string; ability: string; target: string; provider: string; uptime_seconds: number; uptime_percent: number }>; deaths: Array<{ timestamp_seconds: number; player: string; last_hit: LocalDamageSource | null }>; damage_sources: Array<{ player: string; sources: LocalDamageSource[] }>; boss_casts: LocalBossCast[]; armor_reduction: Array<{ ability: string; estimated_armor_reduction: number; uptime_seconds: number; targets: number }> }
 type LocalLog = { file_name: string; encounter_count: number; line_count: number; encounters: LocalEncounter[] }
-type PlayerStats = Actor & { specName: string | null; durationSeconds: number; casts: SpellUse[]; damage: number | null; dps: number | null; healing: number | null; hps: number | null; damageTaken: number | null; damageTakenSources: LocalDamageSource[]; friendlyDamage: number | null; friendlyDamageReliable: boolean; friendlyDamageAbilities: Array<{ name: string; amount: number; hits: number }>; deaths: Array<Record<string, unknown>>; interrupts: Array<Record<string, unknown>>; interruptsAvailable: boolean; consumables: string[]; gear: Array<Record<string, unknown>>; averageItemLevel: number | null; enchantCount: number | null; gemCount: number | null; auras: string[]; uptimes: AbilityUptime[]; uptimeAverage: number | null; recentPercentile: number | null; bestPercentile: number | null }
+type PlayerStats = Actor & { specName: string | null; durationSeconds: number; casts: SpellUse[]; damage: number | null; dps: number | null; healing: number | null; hps: number | null; damageTaken: number | null; damageTakenSources: LocalDamageSource[]; friendlyDamage: number | null; friendlyDamageReliable: boolean; friendlyDamageAbilities: Array<{ name: string; amount: number; hits: number }>; deaths: Array<Record<string, unknown>>; interrupts: Array<Record<string, unknown>>; interruptsAvailable: boolean; consumables: string[]; gear: Array<Record<string, unknown>>; averageItemLevel: number | null; enchantCount: number | null; gemCount: number | null; auras: string[]; preparationAuras: PreparationAura[]; uptimes: AbilityUptime[]; uptimeAverage: number | null; recentPercentile: number | null; bestPercentile: number | null }
 
 async function getHealth(): Promise<Health> {
   const response = await fetch('/api/health')
@@ -277,7 +278,8 @@ function makePlayerStats(analysis: FightAnalysis): PlayerStats[] {
       const takenRow = rowForActor(analysis.tables.damage_taken, actor, 'target')
       const friendlyTotals = isRecord(analysis.tables.friendly_damage) ? analysis.tables.friendly_damage : {}
       const castsRow = rowForActor(analysis.tables.casts, actor, 'source')
-      const buffRow = rowForActor(analysis.tables.buff_uptimes, actor, 'target')
+      const playerBuffTables = isRecord(analysis.tables.player_buffs) ? analysis.tables.player_buffs : {}
+      const buffRow = playerBuffTables[String(actor.id)] ?? rowForActor(analysis.tables.buff_uptimes, actor, 'target')
       const recentPercentile = rankingPercentile(analysis.rankings?.recent_parses, actor)
       const bestPercentile = rankingPercentile(analysis.rankings?.best_rankings, actor)
       const actorDeathEvents = deaths.filter((event) => actorId(event, 'target') === actor.id)
@@ -295,9 +297,22 @@ function makePlayerStats(analysis: FightAnalysis): PlayerStats[] {
       const gemFieldsPresent = gear.some((item) => 'gems' in item)
       const enchantCount = enchantFieldsPresent ? gear.filter((item) => Boolean(item.permanentEnchantName ?? item.permanentEnchant ?? item.enchantName ?? item.enchant)).length : null
       const gemCount = gemFieldsPresent ? gear.reduce((count, item) => count + (Array.isArray(item.gems) ? item.gems.filter((gem) => gem !== null && gem !== 0 && gem !== '').length : 0), 0) : null
-      const auras = Array.isArray(combatantInfo?.auras) ? combatantInfo.auras.map((aura) => isRecord(aura) ? String((isRecord(aura.ability) ? aura.ability.name : undefined) ?? aura.name ?? '') : '').filter(Boolean) : []
-      const consumablePattern = /potion|flask|elixir|food|feast|rune|healthstone|mana stone|wizard oil|sharpening|consecrated|free action|protection potion/i
-      const consumables = [...new Set(allRecords(castsRow).map((record) => isRecord(record.ability) ? record.ability.name : record.name).filter((name): name is string => typeof name === 'string' && consumablePattern.test(name)))]
+      const friendlyActorIds = new Set(analysis.actors.filter((candidate) => candidate.type === 'Player' && participants.has(candidate.id)).map((candidate) => candidate.id))
+      // PlayerDetails combatantInfo carries gear and stats, while CombatantInfo events carry the pull-start aura snapshot.
+      const auraSnapshot = Array.isArray(actorCombatant?.auras) ? actorCombatant.auras : Array.isArray(combatantInfo?.auras) ? combatantInfo.auras : []
+      const preparationAuras = auraSnapshot.flatMap((aura) => {
+        if (!isRecord(aura)) return []
+        const name = String((isRecord(aura.ability) ? aura.ability.name : undefined) ?? aura.name ?? '')
+        const sourceId = Number(aura.source ?? aura.sourceID ?? aura.sourceId)
+        if (!name || !Number.isFinite(sourceId) || !friendlyActorIds.has(sourceId)) return []
+        const source = analysis.actors.find((candidate) => candidate.id === sourceId)?.name ?? actor.name
+        return [{ name, source, selfApplied: sourceId === actor.id }]
+      })
+      const auras = preparationAuras.map((aura) => aura.name)
+      const consumablePattern = /potion|flask|elixir|well fed|food|feast|rune|healthstone|mana stone|wizard oil|sharpening|consecrated|free action|protection potion|healing power|destruction|super mana|super healing|fel mana|ironshield|dreamless sleep|nightmare seed|drums/i
+      const castConsumables = allRecords(castsRow).map((record) => isRecord(record.ability) ? record.ability.name : record.name).filter((name): name is string => typeof name === 'string' && consumablePattern.test(name))
+      const buffConsumables = allRecords(buffRow).map((record) => isRecord(record.ability) ? record.ability.name : record.name).filter((name): name is string => typeof name === 'string' && consumablePattern.test(name))
+      const consumables = [...new Set([...castConsumables, ...buffConsumables, ...auras.filter((name) => consumablePattern.test(name))])]
       const uptimes = allRecords(buffRow).filter((record) => record !== buffRow && (typeof record.name === 'string' || (isRecord(record.ability) && typeof record.ability.name === 'string'))).map((record) => {
         const rawPercent = record.uptimePercent ?? record.uptime ?? record.percent ?? record.percentage
         const active = numericValue(record, ['totalUptime', 'activeTime'])
@@ -331,6 +346,7 @@ function makePlayerStats(analysis: FightAnalysis): PlayerStats[] {
         enchantCount,
         gemCount,
         auras,
+        preparationAuras,
         uptimes,
         uptimeAverage: uptimes.length && uptimes.every((ability) => ability.percent !== null) ? uptimes.reduce((sum, ability) => sum + (ability.percent ?? 0), 0) / uptimes.length : null,
         recentPercentile,
@@ -760,7 +776,7 @@ function PlayerDetail({ player }: { player: PlayerStats }) {
   const gemItems = player.gear.flatMap((item) => Array.isArray(item.gems) ? item.gems.filter((gem) => gem !== null && gem !== 0 && gem !== '').map((gem) => ({ item, gem })) : [])
   const maxDamageSource = Math.max(1, ...player.damageTakenSources.map((source) => source.amount))
   const topDamage = player.damageTakenSources[0]
-  return <details className="player-detail"><summary>Review · {player.uptimes.length ? `${player.uptimes.length} uptime rows` : 'uptime unavailable'}{topDamage ? ` · top taken: ${topDamage.ability} (${formatMetric(topDamage.amount)})` : ' · damage sources unavailable'}</summary><div className="player-detail-content">
+  return <details className="player-detail"><summary>Review · {player.uptimes.length ? `${player.uptimes.length} uptime rows` : 'uptime unavailable'} · prep {player.preparationAuras.length} buffs / {player.consumables.length} consumes{topDamage ? ` · top taken: ${topDamage.ability} (${formatMetric(topDamage.amount)})` : ' · damage sources unavailable'}</summary><div className="player-detail-content">
     <section><h4>Evidence to review</h4><ul className="suggestion-list">{playerSuggestions(player).map((note) => <li key={note}>{note}</li>)}</ul></section>
     <section><h4>Damage taken sources</h4>{player.damageTakenSources.length ? <div className="player-damage-sources">{player.damageTakenSources.slice(0, 5).map((source) => <div key={`${source.source}-${source.ability}-${source.damage_type}`}><span><b>{source.ability}</b><small>{source.source || 'Source not identified'}{source.damage_type ? ` · ${source.damage_type}` : ''}</small></span><i><em style={{ width: `${Math.max(2, source.amount * 100 / maxDamageSource)}%` }} /></i><strong>{formatMetric(source.amount)}</strong></div>)}</div> : <p className="analysis-empty">Warcraft Logs did not return a readable ability breakdown for damage taken.</p>}</section>
     {(player.recentPercentile !== null || player.bestPercentile !== null) && <section><h4>WCL performance context</h4><p><b>Recent parses:</b> {player.recentPercentile === null ? 'Unavailable' : `${player.recentPercentile.toFixed(1)} percentile`}</p><p><b>Best-score rankings:</b> {player.bestPercentile === null ? 'Unavailable' : `${player.bestPercentile.toFixed(1)} percentile`}</p><p>These percentiles compare this pull against Warcraft Logs rankings, not against this guild's assignments or a fully composition-matched cohort.</p></section>}
@@ -770,7 +786,7 @@ function PlayerDetail({ player }: { player: PlayerStats }) {
       <details><summary>Gem details ({gemItems.length})</summary><ul>{gemItems.map(({ item, gem }, index) => <li key={index}><span>{String(item.name ?? item.itemName ?? 'Equipped item')}</span><strong>{isRecord(gem) ? String(gem.name ?? gem.id ?? 'Gem') : String(gem)}</strong></li>)}</ul></details>
       {player.gear.length > 0 && <details><summary>Equipped items ({player.gear.length})</summary><ul>{player.gear.map((item, index) => <li key={index}><span>{String(item.name ?? item.itemName ?? `Item ${item.id ?? ''}`)}</span><strong>{numericValue(item, ['itemLevel', 'itemlevel', 'ilevel', 'ilvl']) ?? '—'}</strong></li>)}</ul></details>}
     </section>
-    <section><h4>Preparation · buffs and consumables</h4><p><b>Consumables observed:</b> {player.consumables.length ? player.consumables.join(', ') : 'No matching consumable casts in returned data'}</p><p><b>Buffs at pull:</b> {player.auras.length ? player.auras.join(', ') : 'Not returned by Warcraft Logs'}</p><p>These are log observations; a missing entry can also mean the report started after preparation or did not include the relevant data.</p></section>
+    <section><h4>Preparation · buffs and consumables</h4><p><b>Consumables observed:</b> {player.consumables.length ? player.consumables.join(', ') : 'No matching consumable casts or pull-start auras returned'}</p>{player.preparationAuras.length ? <ul>{player.preparationAuras.map((aura, index) => <li key={`${aura.name}-${aura.source}-${index}`}><span>{aura.name}</span><strong>{aura.selfApplied ? 'Self applied' : `By ${aura.source}`}</strong></li>)}</ul> : <p><b>Friendly-cast buffs at pull:</b> unavailable in the returned combatant snapshot</p>}<p>Buffs are taken from the player’s pull-start aura snapshot and filtered to friendly player sources. Consumables also include matching buff effects, not just cast-table rows.</p></section>
   </div></details>
 }
 
