@@ -24,15 +24,34 @@ body[data-theme='oiler'] {
 }
 
 body[data-theme='freedom'] {
-  background: #071b4c;
+  background: #a81431;
   color: #fff;
-  --theme-surface: #f8faff;
-  --theme-raised: #dce7ff;
-  --theme-border: #e63946;
+  --theme-surface: #edf0f5;
+  --theme-raised: #dbe2ec;
+  --theme-border: #fff;
   --theme-text: #071b4c;
   --theme-muted: #29477b;
   --theme-accent: #d90429;
   --theme-accent-cool: #1455b8;
+}
+
+body[data-theme='freedom'] .topbar {
+  position: relative;
+  isolation: isolate;
+  border-color: #fff;
+}
+
+body[data-theme='freedom'] .topbar::before {
+  position: absolute;
+  z-index: -1;
+  inset: 0 -100vw;
+  border-bottom: 2px solid #fff;
+  background: #06459b;
+  content: '';
+}
+
+body[data-theme='freedom'] .topbar :is(.brand, .version, .system-status) {
+  color: #fff;
 }
 
 body[data-theme='hellothere'] .topbar,
@@ -97,9 +116,9 @@ body[data-theme='oiler'] .input-row button { background: var(--theme-accent); bo
 body[data-theme='freedom'] .input-row button { background: #d90429; border: 3px solid #fff; color: #fff; box-shadow: 3px 3px 0 #1455b8; }
 body[data-theme='freedom'] :is(.boss-row, .analysis-section, .analysis-card, .local-analysis-section) { border-width: 2px; }
 body[data-theme='freedom'] .class-group > summary { text-transform: uppercase; font-weight: 800; }
-body[data-theme='freedom'] .learning-loop { background: #dce7ff; border-color: #d90429; color: #071b4c; }
+body[data-theme='freedom'] .learning-loop { background: #dbe2ec; border-color: #d90429; color: #071b4c; }
 body[data-theme='freedom'] .learning-loop strong { color: #d90429; }
 
 body[data-theme='hellothere'] :is(.timeline-track, .boss-cast-track > div, .local-death-track > div) { background-color: #1a2940; border-color: #34445e; }
 body[data-theme='oiler'] :is(.timeline-track, .boss-cast-track > div, .local-death-track > div) { background-color: #223342; border-color: #405362; }
-body[data-theme='freedom'] :is(.timeline-track, .boss-cast-track > div, .local-death-track > div) { background-color: #dce7ff; border-color: #d90429; }
+body[data-theme='freedom'] :is(.timeline-track, .boss-cast-track > div, .local-death-track > div) { background-color: #dbe2ec; border-color: #d90429; }
