@@ -63,12 +63,14 @@ def analyze_combat_log(content: bytes) -> dict[str, Any]:
         raise ValueError("Log file exceeds the 160 MB upload limit.")
     encounters: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
-    pending_auras: dict[tuple[str, str, int, str, str], tuple[int, int]] = {}
-    aura_totals: dict[tuple[str, str, int, str, str], int] = defaultdict(int)
-    observed_stacks: dict[tuple[str, str, int, str, str], int] = defaultdict(lambda: 1)
-    aura_applications: dict[tuple[str, str, int, str, str], int] = defaultdict(int)
+    pending_auras: dict[tuple[Any, ...], tuple[int, int]] = {}
+    aura_totals: dict[tuple[Any, ...], int] = defaultdict(int)
+    observed_stacks: dict[tuple[Any, ...], int] = defaultdict(lambda: 1)
+    aura_applications: dict[tuple[Any, ...], int] = defaultdict(int)
     long_buff_intervals: list[dict[str, Any]] = []
     active_long_buffs: dict[tuple[str, str, int, str, str], dict[str, Any]] = {}
+    damage_sources: dict[tuple[str, str, str, str, str], list[int]] = defaultdict(lambda: [0, 0])
+    last_damage_by_target: dict[str, dict[str, Any]] = {}
     last_timestamp = 0
     line_count = 0
 
@@ -95,24 +97,52 @@ def analyze_combat_log(content: bytes) -> dict[str, Any]:
                 if current is not None:
                     current["roster"][actor_guid] = actor_name
         if event == "ENCOUNTER_START" and len(fields) >= 3:
-            current = {"id": fields[1], "name": fields[2], "start": timestamp, "end": None, "kill": None, "roster": {}}
+            if current is not None:
+                current["end"] = timestamp
+                current["kill"] = None
+                current["duration_seconds"] = round(max(0, timestamp - current["start"]) / 1000, 1)
+                current["debuffs"] = _debuff_rows(aura_totals, current["start"], timestamp, current["name"], pending_auras, observed_stacks, aura_applications)
+                current["armor_reduction"] = _armor_rows(current["debuffs"])
+                current["long_buffs"] = _long_buff_coverage(long_buff_intervals, active_long_buffs, current, timestamp)
+                current["damage_sources"] = _damage_source_rows(damage_sources)
+                pending_auras.clear()
+                aura_totals.clear()
+                observed_stacks.clear()
+                aura_applications.clear()
+                damage_sources.clear()
+                last_damage_by_target.clear()
+            current = {"id": fields[1], "name": fields[2], "start": timestamp, "end": None, "kill": None, "roster": {}, "deaths": []}
             encounters.append(current)
             pending_auras.clear()
             aura_totals.clear()
             observed_stacks.clear()
             aura_applications.clear()
+            damage_sources.clear()
+            last_damage_by_target.clear()
         elif current is not None and event == "ENCOUNTER_END":
             current["end"] = timestamp
             current["kill"] = fields[5] == "1" if len(fields) > 5 else None
-            current["debuffs"] = _debuff_rows(aura_totals, current["start"], timestamp, pending_auras, observed_stacks, aura_applications)
+            current["debuffs"] = _debuff_rows(aura_totals, current["start"], timestamp, current["name"], pending_auras, observed_stacks, aura_applications)
             current["armor_reduction"] = _armor_rows(current["debuffs"])
             current["duration_seconds"] = max(1, (timestamp - current["start"]) / 1000)
             current["long_buffs"] = _long_buff_coverage(long_buff_intervals, active_long_buffs, current, timestamp)
+            current["damage_sources"] = _damage_source_rows(damage_sources)
             current = None
             pending_auras.clear()
             aura_totals.clear()
             observed_stacks.clear()
             aura_applications.clear()
+            damage_sources.clear()
+            last_damage_by_target.clear()
+        elif current is not None and event == "UNIT_DIED" and target_guid.startswith("Player-"):
+            final_hit = last_damage_by_target.get(target_guid)
+            if final_hit and timestamp - final_hit["timestamp"] > 2500:
+                final_hit = None
+            current["deaths"].append({
+                "timestamp_seconds": round((timestamp - current["start"]) / 1000, 1),
+                "player": target_name,
+                "last_hit": {key: value for key, value in final_hit.items() if key != "timestamp"} if final_hit else None,
+            })
         elif event.startswith("SPELL_AURA_") and len(fields) >= 13:
             source, target = source_guid, target_guid
             try:
@@ -135,9 +165,9 @@ def analyze_combat_log(content: bytes) -> dict[str, Any]:
                 continue
             if aura_type != "DEBUFF":
                 continue
-            if current is None or not source.startswith("Player-") or target.startswith(("Player-", "Pet-")):
+            if current is None or target.startswith("Player-"):
                 continue
-            key = (target, target_name, spell_id, spell, source_name)
+            key = (target, target_name, spell_id, spell, source_name, source.startswith("Player-"), target_name.casefold() == current["name"].casefold())
             change = event in ("SPELL_AURA_APPLIED", "SPELL_AURA_REFRESH", "SPELL_AURA_APPLIED_DOSE")
             if change:
                 previous = pending_auras.get(key)
@@ -168,13 +198,24 @@ def analyze_combat_log(content: bytes) -> dict[str, Any]:
                 if previous:
                     aura_totals[key] += max(0, timestamp - previous[0])
 
+        if current is not None and event in {"SWING_DAMAGE", "SPELL_DAMAGE", "SPELL_PERIODIC_DAMAGE", "RANGE_DAMAGE", "DAMAGE_SHIELD", "DAMAGE_SPLIT", "ENVIRONMENTAL_DAMAGE"} and target_guid.startswith("Player-"):
+            hit = _damage_event(event, fields)
+            if hit:
+                ability, damage_type, amount = hit
+                source = source_name if source_name and source_name != "nil" else "Environment"
+                key = (target_guid, target_name, source, ability, damage_type)
+                damage_sources[key][0] += amount
+                damage_sources[key][1] += 1
+                last_damage_by_target[target_guid] = {"timestamp": timestamp, "source": source, "ability": ability, "damage_type": damage_type, "amount": amount}
+
     if current is not None:
         current["end"] = last_timestamp
         current["kill"] = None
         current["duration_seconds"] = round(max(0, last_timestamp - current["start"]) / 1000, 1)
-        current["debuffs"] = _debuff_rows(aura_totals, current["start"], last_timestamp, pending_auras, observed_stacks, aura_applications)
+        current["debuffs"] = _debuff_rows(aura_totals, current["start"], last_timestamp, current["name"], pending_auras, observed_stacks, aura_applications)
         current["armor_reduction"] = _armor_rows(current["debuffs"])
         current["long_buffs"] = _long_buff_coverage(long_buff_intervals, active_long_buffs, current, last_timestamp)
+        current["damage_sources"] = _damage_source_rows(damage_sources)
     for fight in encounters:
         if fight.get("end") and not fight.get("debuffs"):
             fight["debuffs"] = []
@@ -187,25 +228,60 @@ def analyze_combat_log(content: bytes) -> dict[str, Any]:
     return {"file_name": None, "encounters": encounters, "encounter_count": len(encounters), "line_count": line_count}
 
 
-def _debuff_rows(totals: dict, start: int, end: int, pending: dict | None = None, observed_stacks: dict | None = None, applications: dict | None = None) -> list[dict[str, Any]]:
-    grouped: dict[tuple[int, str, str, str], list[int]] = defaultdict(lambda: [0, 1])
+def _damage_event(event: str, fields: list[str]) -> tuple[str, str, int] | None:
+    if event == "ENVIRONMENTAL_DAMAGE":
+        ability_index = 9
+        amount_index, school_index = (29, 32) if len(fields) >= 30 else (10, 12)
+    elif event == "SWING_DAMAGE":
+        ability_index = -1
+        amount_index, school_index = (28, 31) if len(fields) >= 29 else (9, 11)
+    else:
+        ability_index = 10
+        amount_index, school_index = (31, 34) if len(fields) >= 32 else (12, 11)
+    try:
+        amount = max(0, int(float(fields[amount_index])))
+    except (IndexError, ValueError):
+        return None
+    ability = fields[ability_index] if ability_index >= 0 and len(fields) > ability_index else "Melee"
+    if event == "ENVIRONMENTAL_DAMAGE":
+        ability = f"Environmental · {ability}"
+    try:
+        school = int(fields[school_index], 0)
+    except (IndexError, ValueError):
+        school = 0
+    schools = [(mask, name) for mask, name in ((1, "Physical"), (2, "Holy"), (4, "Fire"), (8, "Nature"), (16, "Frost"), (32, "Shadow"), (64, "Arcane")) if school & mask]
+    damage_type = "/".join(name for _, name in schools) or "Unknown type"
+    return ability, damage_type, amount
+
+
+def _damage_source_rows(totals: dict[tuple[str, str, str, str, str], list[int]]) -> list[dict[str, Any]]:
+    by_player: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for (_, player, source, ability, damage_type), (amount, hits) in totals.items():
+        by_player[(player, "")].append({"source": source, "ability": ability, "damage_type": damage_type, "amount": amount, "hits": hits})
+    return [{"player": player, "sources": sorted(sources, key=lambda item: (-item["amount"], item["ability"]))[:8]}
+            for (player, _), sources in sorted(by_player.items())]
+
+
+def _debuff_rows(totals: dict, start: int, end: int, boss_name: str, pending: dict | None = None, observed_stacks: dict | None = None, applications: dict | None = None) -> list[dict[str, Any]]:
+    grouped: dict[tuple[int, str, str, str, bool, bool], list[int]] = defaultdict(lambda: [0, 1])
     pending = pending or {}
     observed_stacks = observed_stacks or {}
     applications = applications or {}
     for key, elapsed in totals.items():
-        target_id, target, spell_id, spell, provider = key
+        target_id, target, spell_id, spell, provider, provider_is_player, target_is_boss = key
         active = pending.get(key)
         duration = elapsed + (max(0, end - active[0]) if active else 0)
         stacks = max(active[1] if active else 1, observed_stacks.get(key, 1))
-        aggregate = grouped[(spell_id, spell, target, provider)]
+        aggregate = grouped[(spell_id, spell, target, provider, provider_is_player, target_is_boss)]
         aggregate[0] += duration
         aggregate[1] = max(aggregate[1], stacks)
         if len(aggregate) < 3:
             aggregate.append(0)
         aggregate[2] += applications.get(key, 0)
     rows = []
-    for (spell_id, spell, target, provider), (uptime_ms, stacks, application_count) in grouped.items():
+    for (spell_id, spell, target, provider, provider_is_player, target_is_boss), (uptime_ms, stacks, application_count) in grouped.items():
         rows.append({"spell_id": spell_id, "ability": spell, "target": target, "provider": provider,
+                     "provider_is_player": provider_is_player, "target_is_boss": target_is_boss,
                      "uptime_seconds": round(uptime_ms / 1000, 1), "uptime_percent": round(100 * uptime_ms / max(1, end - start), 1),
                      "fight_duration_seconds": round((end - start) / 1000, 1), "applications": application_count,
                      "armor_reduction": ARMOR_REDUCTION.get(spell, 0) or STACKING_ARMOR_REDUCTION.get(spell, 0) * stacks,
