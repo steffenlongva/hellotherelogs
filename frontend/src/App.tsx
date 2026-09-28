@@ -5,6 +5,7 @@ import './local-log.css'
 import './aura-coverage.css'
 import './long-buff.css'
 import './upload-analysis.css'
+import { bossGuideFor, type BossGuide } from './boss-guides'
 import { Activity, ArrowLeft, ArrowUpRight, Check, CircleHelp, Clock3, Command, ExternalLink, LoaderCircle, Shield, Skull, Swords, Trophy } from 'lucide-react'
 
 type Health = { status: string; service: string }
@@ -48,7 +49,8 @@ type LocalDebuff = { spell_id: number; ability: string; target: string; provider
 type LocalBuffPlayer = { id: string; name: string; uptime_seconds: number; uptime_percent: number; present_before_pull: boolean; status: string }
 type LocalBuff = { ability: string; covered_players: number; roster_size: number; players: LocalBuffPlayer[] }
 type LocalDamageSource = { source: string; ability: string; damage_type: string; amount: number; hits: number }
-type LocalEncounter = { id: string; name: string; kill: boolean | null; duration_seconds: number; roster: Array<{ id: string; name: string }>; debuffs: LocalDebuff[]; long_buffs: LocalBuff[]; deaths: Array<{ timestamp_seconds: number; player: string; last_hit: LocalDamageSource | null }>; damage_sources: Array<{ player: string; sources: LocalDamageSource[] }>; armor_reduction: Array<{ ability: string; estimated_armor_reduction: number; uptime_seconds: number; targets: number }> }
+type LocalBossCast = { timestamp_seconds: number; source: string; ability: string; status: 'completed' | 'interrupted' | 'unknown'; priority: 'critical' | 'high' | 'review'; reason: string | null; interrupted_by?: string; cast_ms: number }
+type LocalEncounter = { id: string; name: string; kill: boolean | null; duration_seconds: number; roster: Array<{ id: string; name: string }>; debuffs: LocalDebuff[]; long_buffs: LocalBuff[]; raid_buffs: Array<{ family: string; ability: string; target: string; provider: string; uptime_seconds: number; uptime_percent: number }>; deaths: Array<{ timestamp_seconds: number; player: string; last_hit: LocalDamageSource | null }>; damage_sources: Array<{ player: string; sources: LocalDamageSource[] }>; boss_casts: LocalBossCast[]; armor_reduction: Array<{ ability: string; estimated_armor_reduction: number; uptime_seconds: number; targets: number }> }
 type LocalLog = { file_name: string; encounter_count: number; line_count: number; encounters: LocalEncounter[] }
 type PlayerStats = Actor & { specName: string | null; durationSeconds: number; casts: SpellUse[]; damage: number | null; dps: number | null; healing: number | null; hps: number | null; damageTaken: number | null; damageTakenSources: LocalDamageSource[]; friendlyDamage: number | null; friendlyDamageReliable: boolean; friendlyDamageAbilities: Array<{ name: string; amount: number; hits: number }>; deaths: Array<Record<string, unknown>>; interrupts: Array<Record<string, unknown>>; interruptsAvailable: boolean; consumables: string[]; gear: Array<Record<string, unknown>>; averageItemLevel: number | null; enchantCount: number | null; gemCount: number | null; auras: string[]; uptimes: AbilityUptime[]; uptimeAverage: number | null; recentPercentile: number | null; bestPercentile: number | null }
 
@@ -457,10 +459,13 @@ function LocalLogView({ log }: { log: LocalLog }) {
       {encounter.deaths.length ? <><div className="local-death-track"><span className="local-track-start">0:00</span><div>{encounter.deaths.map((death, index) => <i key={`${death.player}-${index}`} style={{ left: `${Math.min(100, 100 * death.timestamp_seconds / Math.max(1, encounter.duration_seconds))}%` }} title={`${death.player} · ${formatFightTime(death.timestamp_seconds)}`} />)}</div><span>{formatFightTime(encounter.duration_seconds)}</span></div><div className="local-death-list">{encounter.deaths.map((death, index) => <article key={`${death.player}-${index}`}><time>{formatFightTime(death.timestamp_seconds)}</time><strong>{death.player}</strong>{death.last_hit ? <span>{death.last_hit.ability} · {death.last_hit.damage_type} · {death.last_hit.amount.toLocaleString()} damage <small>from {death.last_hit.source}</small></span> : <span>Final damaging event unavailable in this log slice</span>}</article>)}</div></> : <p className="analysis-empty">No player deaths were recorded during this encounter.</p>}
       <p className="data-note">Death recaps show the last logged damage event immediately before the death when available; this may not prove the single lethal blow.</p>
     </section>
+    <BossReferenceCard fightName={encounter.name} durationMs={encounter.duration_seconds * 1000} casts={encounter.boss_casts} damageSources={encounter.damage_sources.flatMap((player) => player.sources)} />
+    <BossCastCard fightName={encounter.name} durationMs={encounter.duration_seconds * 1000} localCasts={encounter.boss_casts} casts={null} interrupts={null} actors={[]} />
     <section className="local-analysis-section"><div className="local-section-heading"><div><span className="local-section-kicker">02 / INCOMING DAMAGE</span><h4>Damage taken · source breakdown</h4></div><span>{encounter.damage_sources.reduce((sum, row) => sum + row.sources.length, 0)} SOURCES</span></div>
       {encounter.damage_sources.length ? <div className="local-player-source-grid">{encounter.damage_sources.map((player) => <article key={player.player}><header><strong>{player.player}</strong><span>{player.sources.reduce((sum, source) => sum + source.amount, 0).toLocaleString()} total</span></header>{player.sources.slice(0, 5).map((source) => <div className="local-source-row" key={`${source.source}-${source.ability}-${source.damage_type}`}><span><b>{source.ability}</b><small>{source.source} · {source.damage_type} · {source.hits} hits</small></span><i><em style={{ width: `${Math.max(2, source.amount * 100 / maximumDamage)}%` }} /></i><strong>{source.amount.toLocaleString()}</strong></div>)}</article>)}</div> : <p className="analysis-empty">No player damage events were recorded for this encounter.</p>}
     </section>
     <section className="local-analysis-section"><div className="local-section-heading"><div><span className="local-section-kicker">03 / RAID DEBUFFS</span><h4>Short debuffs</h4></div><span>{encounter.debuffs.length} EFFECTS</span></div><p className="local-section-note">Uptime is measured against the selected boss fight. Source identity distinguishes player applications from boss, pet, and environmental sources.</p>
+      <BossDebuffPriorityCard fightName={encounter.name} durationMs={encounter.duration_seconds * 1000} rows={encounter.debuffs.filter((row) => row.target_is_boss)} />
       <LocalDebuffBucket title="On the boss · applied by players" rows={bossPlayerDebuffs} duration={encounter.duration_seconds} />
       <LocalDebuffBucket title="On the boss · other sources" rows={bossOtherDebuffs} duration={encounter.duration_seconds} />
       <LocalDebuffBucket title="On other enemies" rows={otherEnemyDebuffs} duration={encounter.duration_seconds} />
@@ -469,6 +474,7 @@ function LocalLogView({ log }: { log: LocalLog }) {
       {encounter.long_buffs.length ? <div className="long-buff-grid">{encounter.long_buffs.map((buff) => { const missing = buff.players.filter((player) => player.uptime_percent === 0); const covered = buff.players.length - missing.length; return <article className="long-buff-card" key={buff.ability}><header><strong>{buff.ability}</strong><span>{missing.length ? `${missing.length} missing` : `${covered} / ${buff.roster_size} covered`}</span></header><div className="buff-missing-summary">{missing.length ? <><strong>{missing.length} players not seen</strong><span>{missing.map((player) => player.name).join(', ')}</span></> : <strong>All roster members seen with this buff</strong>}</div><details><summary>Show all {buff.players.length} players and uptime</summary><div className="long-buff-players">{buff.players.map((player) => <div className={`long-buff-player ${player.uptime_percent === 0 ? 'buff-missing' : ''}`} key={player.id}><span><b>{player.name}</b><small>{player.uptime_percent === 0 ? 'Not seen in log' : player.present_before_pull ? 'Active at pull' : 'Applied during fight'}</small></span><i><em style={{ width: `${Math.min(100, player.uptime_percent)}%` }} /></i><strong>{player.uptime_percent.toFixed(0)}%</strong><small>{player.uptime_seconds}s</small></div>)}</div></details></article>})}</div> : <p className="analysis-empty">No recognized long-duration class buffs were observed on this encounter roster.</p>}
       <p className="data-note">Only buffs recorded on at least one player are listed. “Not seen” means the log contains no application or active interval for that player; verify assignments and logging coverage before treating it as a miss.</p>
     </section>
+    <ObservedRaidBuffCard rows={encounter.raid_buffs} />
     <section className="local-analysis-section"><div className="local-section-heading"><div><span className="local-section-kicker">05 / ARMOR</span><h4>Estimated armor reduction</h4></div><span>ESTIMATES</span></div>{encounter.armor_reduction.length ? <div className="armor-grid">{encounter.armor_reduction.map((item) => <article key={item.ability}><span>{item.ability}</span><strong>{item.estimated_armor_reduction.toLocaleString()} armor</strong><small>{item.uptime_seconds}s applied · {item.targets} targets</small></article>)}</div> : <p className="analysis-empty">No recognized armor-reduction debuffs were recorded.</p>}</section>
     <details className="local-compare"><summary>Compare with a Warcraft Logs report</summary><form onSubmit={(event) => { event.preventDefault(); const match = wclUrl.match(/\/reports\/([A-Za-z0-9]+)/); if (match) window.open(`/reports/${match[1]}`, '_blank', 'noopener,noreferrer') }}><label htmlFor="local-wcl-url">PUBLIC FRESH REPORT URL</label><div className="input-row"><input id="local-wcl-url" type="url" value={wclUrl} onChange={(event) => setWclUrl(event.target.value)} placeholder="https://fresh.warcraftlogs.com/reports/…" required /><button type="submit">OPEN COMPARISON <ExternalLink size={14} /></button></div></form><small>Opens the WCL report analyzer in a second tab for side-by-side review.</small></details>
   </section>
@@ -547,6 +553,8 @@ function ReportPage({ code }: { code: string }) {
             <article className="overview-card composition-card"><span className="overview-icon tint-mint"><Swords size={17} /></span><div><strong>{playerStats.length}</strong><span>Raid roster</span></div><div className="comp-bars">{composition.map(([name, count]) => <span key={name} title={`${name}: ${count}`}><i style={{ width: `${100 * count / Math.max(1, playerStats.length)}%` }} />{name}<b>{count}</b></span>)}</div></article>
           </section>
           <TimelineCard deaths={deathEvents} interrupts={interruptEvents} analysis={analysis.data} />
+          <BossReferenceCard fightName={analysis.data.fight.name} durationMs={analysis.data.fight.duration_ms} casts={tableRows(analysis.data.events.boss_casts).filter((row) => String(row.type ?? '').toLowerCase() === 'cast').map((row) => { const ability = String((isRecord(row.ability) ? row.ability.name : undefined) ?? row.abilityName ?? row.name ?? 'Unknown cast'); const source = actorName(row, 'source', analysis.data.actors); const priority = castPriority(analysis.data.fight.name, source, ability); return { timestamp_seconds: Math.max(0, (Number(row.timestamp) - analysis.data.fight.start_time_ms) / 1000), source, ability, status: 'completed' as const, priority: priority.priority, reason: priority.reason, cast_ms: numericValue(row, ['castTime', 'duration']) ?? 0 } })} damageSources={playerStats.flatMap((player) => player.damageTakenSources)} />
+          <BossCastCard fightName={analysis.data.fight.name} durationMs={analysis.data.fight.duration_ms} startTimeMs={analysis.data.fight.start_time_ms} casts={analysis.data.events.boss_casts} interrupts={analysis.data.events.interrupts} actors={analysis.data.actors} />
           <BenchmarkCard benchmarks={benchmarks.data} analysis={analysis.data} players={playerStats} isLoading={benchmarks.isLoading} error={benchmarks.error?.message} strictness={benchmarkStrictness} onStrictnessChange={setBenchmarkStrictness} source={effectiveBenchmarkSource} onSourceChange={setBenchmarkSource} />
           <LearningPlan players={playerStats} deaths={deathEvents} interruptCount={interruptEvents.length} interruptsAvailable={eventDataAvailable(analysis.data.events.interrupts)} deathsAvailable={eventDataAvailable(analysis.data.events.deaths)} />
           <div className="leader-grid">
@@ -557,8 +565,9 @@ function ReportPage({ code }: { code: string }) {
           </div>
           <ClassRoster players={playerStats} deathsAvailable={eventDataAvailable(analysis.data.events.deaths)} interruptsAvailable={eventDataAvailable(analysis.data.events.interrupts)} friendlyDamageComplete={analysis.data.tables.friendly_damage_complete === true} />
           <LongBuffCoverageCard players={playerStats} durationMs={analysis.data.fight.duration_ms} />
+          <ObservedRaidBuffCard rows={playerStats.flatMap((player) => player.uptimes.flatMap((aura) => /bloodlust|heroism|windfury totem|wrath of air|totem of wrath|moonkin aura|leader of the pack|trueshot aura|unleashed rage|ferocious inspiration|battle shout|strength of earth|grace of air/i.test(aura.name) ? [{ family: aura.name, ability: aura.name, target: player.name, provider: '', uptime_seconds: analysis.data.fight.duration_ms / 1000 * (aura.percent ?? 0) / 100, uptime_percent: aura.percent ?? 0 }] : []))} />
           <div className="analysis-grid">
-            <UptimeCard title="Short debuffs applied during this fight" sources={[{ label: 'Debuff', value: analysis.data.tables.debuff_uptimes }]} durationMs={analysis.data.fight.duration_ms} />
+            <BossDebuffPriorityCard fightName={analysis.data.fight.name} durationMs={analysis.data.fight.duration_ms} rows={tableRows(analysis.data.tables.debuff_uptimes)} />
             <UptimeCard title="Fight ability uptime" sources={[{ label: 'Buff', value: analysis.data.tables.ability_uptimes }]} durationMs={analysis.data.fight.duration_ms} />
             <LeaderCard title="Damage taken · review" players={metricLeaders('damageTaken')} metric="damageTaken" tint="pink" />
           </div>
@@ -815,6 +824,121 @@ function TimelineCard({ deaths, interrupts, analysis }: { deaths: Array<Record<s
   </article>
 }
 
+function BossReferenceCard({ fightName, durationMs, casts, damageSources }: { fightName: string; durationMs: number; casts: LocalBossCast[]; damageSources: LocalDamageSource[] }) {
+  const guide: BossGuide | undefined = bossGuideFor(fightName)
+  const observedCasts = new Map<string, { count: number; stopped: number }>()
+  casts.forEach((cast) => { const row = observedCasts.get(cast.ability) ?? { count: 0, stopped: 0 }; row.count += 1; if (cast.status === 'interrupted') row.stopped += 1; observedCasts.set(cast.ability, row) })
+  const incoming = new Map<string, { ability: string; amount: number; hits: number; source: string }>()
+  damageSources.forEach((row) => { if (!row.ability || row.amount <= 0) return; const key = `${row.source}:${row.ability}`; const item = incoming.get(key) ?? { ability: row.ability, amount: 0, hits: 0, source: row.source }; item.amount += row.amount; item.hits += row.hits; incoming.set(key, item) })
+  const incomingRows = [...incoming.entries()].map(([key, row]) => ({ key, ...row })).sort((a, b) => b.amount - a.amount).slice(0, 6)
+  const maximumDamage = Math.max(1, ...incomingRows.map((row) => row.amount))
+  const classicSearch = `https://www.wowhead.com/classic/search?q=${encodeURIComponent(fightName)}`
+  const tbcSearch = `https://www.wowhead.com/tbc/search?q=${encodeURIComponent(fightName)}`
+  return <article className="analysis-card boss-reference-card"><div className="card-heading"><div><span className="guide-kicker">ENCOUNTER FIELD GUIDE</span><h3>{fightName}</h3><p>{guide ? `${guide.era} · ${guide.raid}` : 'Classic / Burning Crusade encounter'}</p></div><span>{guide ? 'REFERENCE + LOG DATA' : 'LOG DATA'}</span></div>
+    <div className="boss-guide-summary"><div><b>Encounter</b><p>{guide?.summary ?? 'Encounter reference is available from the linked database. This panel still summarizes abilities and incoming damage actually recorded for this selected pull.'}</p></div><div><b>Boss health</b><p>{guide?.health ?? 'Not reported in the uploaded combat-log encounter header.'}<small>{guide?.healthNote ?? 'Health varies by game version and raid tuning; open the matching guide/NPC record for the applicable value.'}</small></p></div></div>
+    {guide?.abilities.length ? <section className="boss-guide-abilities"><h4>Key abilities and what they threaten</h4><div>{guide.abilities.map((ability) => { const seen = observedCasts.get(ability.name); return <article className={`guide-ability ${ability.danger}`} key={ability.name}><span>{ability.danger === 'tank' ? 'TANK' : ability.danger === 'raid' ? 'RAID DAMAGE' : ability.danger === 'position' ? 'POSITIONING' : 'INTERRUPT'}</span><div><b>{ability.name}</b><p>{ability.summary}</p></div><small>{seen ? `${seen.count} logged${seen.stopped ? ` · ${seen.stopped} stopped` : ''}` : 'Not observed in cast events'}</small></article>})}</div></section> : <section className="boss-guide-abilities"><h4>Abilities observed in this pull</h4>{observedCasts.size ? <div>{[...observedCasts.entries()].sort((a, b) => b[1].count - a[1].count).slice(0, 8).map(([ability, row]) => <article className="guide-ability raid" key={ability}><span>CASTS</span><div><b>{ability}</b><p>{row.count} recorded cast events in this encounter.</p></div><small>{row.stopped} stopped</small></article>)}</div> : <p className="analysis-empty">No enemy cast events were available for this pull.</p>}</section>}
+    <section className="boss-observed-damage"><h4>Largest recorded incoming abilities</h4>{incomingRows.length ? <div>{incomingRows.map((row) => <div className="boss-observed-row" key={row.key}><span><b>{row.ability}</b><small>{row.source} · {row.hits || '—'} hits</small></span><i><em style={{ width: `${Math.max(2, 100 * row.amount / maximumDamage)}%` }} /></i><strong>{row.amount.toLocaleString()}</strong></div>)}</div> : <p className="analysis-empty">No per-ability damage-taken breakdown was available.</p>}</section>
+    <footer className="boss-guide-links">{guide ? <a href={guide.source} target="_blank" rel="noreferrer">Open encounter strategy source <ExternalLink size={12} /></a> : <><a href={classicSearch} target="_blank" rel="noreferrer">Wowhead Classic lookup <ExternalLink size={12} /></a><a href={tbcSearch} target="_blank" rel="noreferrer">Wowhead TBC lookup <ExternalLink size={12} /></a></>}<small>{(durationMs / 1000).toFixed(0)}s selected fight · log observations are pull-specific; guide notes are reference material.</small></footer>
+  </article>
+}
+
+const TBC_BOSS_DEBUFFS = [
+  { group: 'Armor reduction', name: 'Sunder Armor', aliases: ['sunder armor'], note: 'Warrior armor reduction; stacks to five. Compare with Expose Armor because these compete for the strongest armor-reduction slot.' },
+  { group: 'Armor reduction', name: 'Expose Armor', aliases: ['expose armor'], note: 'Rogue armor reduction; the improved talent rank can exceed five-stack Sunder Armor.' },
+  { group: 'Armor reduction', name: 'Faerie Fire', aliases: ['faerie fire'], note: 'Druid armor reduction and, with Improved Faerie Fire, a melee/ranged hit benefit.' },
+  { group: 'Armor reduction', name: 'Curse of Recklessness', aliases: ['curse of recklessness'], note: 'Warlock armor reduction; review threat and encounter context.' },
+  { group: 'Spell damage amplification', name: 'Curse of the Elements', aliases: ['curse of the elements'], note: 'Increases Arcane, Fire, Frost, and Shadow damage taken.' },
+  { group: 'Spell damage amplification', name: 'Misery', aliases: ['misery'], note: 'Shadow Priest debuff increasing spell damage taken.' },
+  { group: 'Spell damage amplification', name: 'Shadow Weaving', aliases: ['shadow weaving'], note: 'Increases Shadow damage taken; most valuable with Shadow damage in the raid.' },
+  { group: 'Physical damage amplification', name: 'Blood Frenzy', aliases: ['blood frenzy', 'trauma'], note: 'Arms Warrior physical damage taken increase.' },
+  { group: 'Physical damage amplification', name: 'Expose Weakness', aliases: ['expose weakness'], note: 'Survival Hunter attack-power benefit based on the Hunter’s Agility.' },
+  { group: 'School and bleed effects', name: 'Improved Scorch', aliases: ['fire vulnerability', 'improved scorch'], note: 'Fire Mage debuff increasing Fire damage taken.' },
+  { group: 'School and bleed effects', name: 'Mangle', aliases: ['mangle'], note: 'Increases bleed damage; value depends on raid bleed damage.' },
+  { group: 'School and bleed effects', name: 'Improved Faerie Fire', aliases: ['improved faerie fire'], note: 'Balance Druid talent adds melee/ranged hit value to Faerie Fire.' },
+  { group: 'Raid sustain', name: 'Judgement of Wisdom', aliases: ['judgement of wisdom', 'judgment of wisdom'], note: 'Returns mana from attacks and spells.' },
+  { group: 'Raid sustain', name: 'Judgement of Light', aliases: ['judgement of light', 'judgment of light'], note: 'Provides healing from attacks against the target.' },
+]
+
+function BossDebuffPriorityCard({ fightName, durationMs, rows }: { fightName: string; durationMs: number; rows: unknown }) {
+  const sourceRows = tableRows(rows)
+  const groups = [...new Set(TBC_BOSS_DEBUFFS.map((item) => item.group))]
+  return <article className="boss-debuff-priority"><header><div><strong>High-value boss effects</strong><small>{fightName} · fight-relative uptime</small></div><span>{sourceRows.length} OBSERVED ROWS</span></header>
+    {groups.map((group) => <section key={group}><h5>{group}{group === 'Armor reduction' && <small> strongest applicable effect wins</small>}</h5>{TBC_BOSS_DEBUFFS.filter((rule) => rule.group === group).map((rule) => {
+      const matches = sourceRows.filter((row) => {
+        const name = String((isRecord(row.ability) ? row.ability.name : undefined) ?? row.name ?? '').toLowerCase()
+        return rule.aliases.some((alias) => name.includes(alias))
+      })
+      const uptimes = matches.map((row) => {
+        const raw = row.uptimePercent ?? row.uptime ?? row.percent ?? row.percentage
+        const parsed = typeof raw === 'string' && raw.endsWith('%') ? Number.parseFloat(raw) : numericValue(row, ['uptimePercent', 'uptime', 'percent', 'percentage'])
+        const total = numericValue(row, ['totalUptime'])
+        return parsed ?? (total !== null && durationMs > 0 ? total * 100 / durationMs : null)
+      }).filter((value): value is number => value !== null && Number.isFinite(value) && value >= 0 && value <= 100)
+      const percent = uptimes.length ? Math.max(...uptimes) : null
+      const providers = [...new Set(matches.flatMap((row) => {
+        const source = typeof row.provider === 'string' ? row.provider : typeof row.sourceName === 'string' ? row.sourceName : isRecord(row.source) && typeof row.source.name === 'string' ? row.source.name : ''
+        return source ? [source] : []
+      }))]
+      return <div className={`priority-debuff-row ${percent === null ? 'no-debuff-evidence' : ''}`} key={rule.name}><div><b>{rule.name}</b><small>{rule.note}{providers.length ? ` · ${providers.join(', ')}` : ''}</small></div><i><em style={{ width: `${Math.min(100, percent ?? 0)}%` }} /></i><strong>{percent === null ? 'No log evidence' : `${percent.toFixed(0)}%`}</strong></div>
+    })}</section>)}
+    <p>“No log evidence” is a prompt to check roster, assignment, immunity, and phase. It does not by itself mean the raid missed an effect.</p>
+  </article>
+}
+
+function castPriority(fightName: string, source: string, ability: string): { priority: 'critical' | 'high' | 'review'; reason: string } {
+  const boss = fightName.toLowerCase()
+  const spell = ability.toLowerCase()
+  const caster = source.toLowerCase()
+  if (boss.includes('magtheridon') && spell.includes('blast nova')) return { priority: 'critical', reason: 'Raid-wide damage; the cube assignment must stop this cast.' }
+  if (boss.includes('magtheridon') && caster.includes('channeler') && spell.includes('shadow bolt volley')) return { priority: 'high', reason: 'Channeler volleys deal heavy raid-wide damage.' }
+  if (boss.includes('magtheridon') && caster.includes('channeler') && spell.includes('dark mending')) return { priority: 'high', reason: 'A Channeler heal can extend the add phase.' }
+  if (boss.includes("kael'thas") && spell.includes('fireball')) return { priority: 'critical', reason: 'Kael’thas Fireball is a dangerous tank hit; guides recommend interrupting it.' }
+  if (boss.includes("kael'thas") && spell.includes('pyroblast')) return { priority: 'critical', reason: 'Review the Shock Barrier and assigned kick sequence for Pyroblast.' }
+  if (boss.includes('illidari council') && caster.toLowerCase().includes('malande') && spell.includes('heal')) return { priority: 'high', reason: 'Lady Malande’s heal can undo raid damage; review interrupt coverage.' }
+  return { priority: 'review', reason: 'Review this cast against the encounter plan and assigned response.' }
+}
+
+function BossCastCard({ fightName, durationMs, startTimeMs = 0, casts, interrupts, actors, localCasts }: {
+  fightName: string
+  durationMs: number
+  startTimeMs?: number
+  casts: unknown
+  interrupts: unknown
+  actors: Actor[]
+  localCasts?: LocalBossCast[]
+}) {
+  const normalized = localCasts
+    ? localCasts.map((cast) => ({ ...cast, timeMs: cast.timestamp_seconds * 1000 }))
+    : [
+      ...tableRows(casts).filter((row) => String(row.type ?? '').toLowerCase() === 'cast').map((row) => {
+        const ability = String((isRecord(row.ability) ? row.ability.name : undefined) ?? row.abilityName ?? row.name ?? 'Unknown cast')
+        const source = actorName(row, 'source', actors)
+        const status = String(row.type ?? '').toLowerCase().includes('fail') ? 'unknown' as const : 'completed' as const
+        return { ability, source, status, timeMs: Number(row.timestamp) - startTimeMs, cast_ms: numericValue(row, ['castTime', 'duration']) ?? 0, interrupted_by: undefined, ...castPriority(fightName, source, ability) }
+      }),
+      ...tableRows(interrupts).map((row) => {
+        const extra = isRecord(row.extraAbility) ? row.extraAbility.name : row.extraAbilityName ?? row.interruptedAbilityName
+        const ability = typeof extra === 'string' ? extra : 'Interrupted cast'
+        const source = actorName(row, 'target', actors)
+        return { ability, source, status: 'interrupted' as const, timeMs: Number(row.timestamp) - startTimeMs, cast_ms: 0, interrupted_by: actorName(row, 'source', actors), ...castPriority(fightName, source, ability) }
+      }),
+    ].map((cast) => ({ ...cast, timestamp_seconds: cast.timeMs / 1000 }))
+      .filter((cast) => Number.isFinite(cast.timeMs) && cast.timeMs >= 0 && cast.timeMs <= durationMs)
+      .sort((a, b) => a.timeMs - b.timeMs)
+  const completed = normalized.filter((cast) => cast.status === 'completed').length
+  const stopped = normalized.filter((cast) => cast.status === 'interrupted').length
+  const available = localCasts !== undefined || eventDataAvailable(casts) || eventDataAvailable(interrupts)
+  const duration = Math.max(1, durationMs)
+  return <article className={`analysis-card boss-cast-card ${localCasts ? 'local-analysis-section' : ''}`}><div className="card-heading"><div><h3>Boss cast priorities</h3><p>Enemy casts, successful stops, and encounter-specific review flags</p></div><span>{completed} CASTS · {stopped} INTERRUPTS</span></div>
+    {!available ? <p className="analysis-empty">Enemy cast events were not returned for this pull.</p> : !normalized.length ? <p className="analysis-empty">No boss casts or interrupt events were recorded in the available data.</p> : <>
+      <div className="boss-cast-track" role="img" aria-label={`${completed} boss casts and ${stopped} interrupts over ${formatDuration(durationMs)}`}><span>0:00</span><div>{normalized.slice(0, 250).map((cast, index) => <i key={`${cast.ability}-${index}`} className={`${cast.status} ${cast.priority}`} style={{ left: `${Math.min(100, cast.timeMs * 100 / duration)}%` }} title={`${formatDuration(cast.timeMs)} · ${cast.ability} · ${cast.status}`} />)}</div><span>{formatDuration(durationMs)}</span></div>
+      <div className="boss-cast-legend"><span><i className="critical" /> Critical</span><span><i className="high" /> High</span><span><i className="review" /> Other cast</span><span><i className="interrupted" /> Interrupted</span></div>
+      <div className="boss-cast-list">{normalized.map((cast, index) => <div className={`boss-cast-row ${cast.priority}`} key={`${cast.ability}-${cast.timeMs}-${index}`}><time>{formatDuration(cast.timeMs)}</time><b>{cast.ability}</b><span>{cast.source}</span><em className={cast.status}>{cast.status === 'completed' ? 'CAST COMPLETED' : cast.status === 'interrupted' ? `STOPPED${cast.interrupted_by ? ` · ${cast.interrupted_by}` : ''}` : 'OUTCOME UNKNOWN'}</em><small>{cast.reason}</small></div>)}</div>
+    </>}
+    <p className="data-note">Critical flags are a small, encounter-specific guide set—not a complete tactics script. Completed casts are observations, not proof that a player failed an assignment; phase and encounter strategy still matter.</p>
+  </article>
+}
+
 function tableTotalTime(value: unknown, depth = 0): number | null {
   const parsed = parseJSON(value)
   if (depth > 7 || !isRecord(parsed)) return null
@@ -855,6 +979,15 @@ function LongBuffCoverageCard({ players, durationMs }: { players: PlayerStats[];
   return <article className="analysis-card long-buff-coverage"><div className="card-heading"><div><h3>Long-duration class buffs</h3><p>Missing coverage first · full uptime across this fight ({(durationMs / 1000).toFixed(0)}s)</p></div><span>{families.length} BUFF TYPES</span></div>
     {!families.length ? <p className="analysis-empty">No recognized long-duration class buffs were returned for this pull.</p> : <div className="long-buff-grid">{families.map(({ family, coverage }) => { const missing = coverage.filter(({ uptime, presentAtPull }) => !((uptime?.percent ?? 0) > 0 || presentAtPull)); const covered = coverage.length - missing.length; return <section className="long-buff-card" key={family.name}><header><strong>{family.name}</strong><span>{missing.length ? `${missing.length} missing` : `${covered} / ${coverage.length} covered`}</span></header><div className="buff-missing-summary">{missing.length ? <><strong>{missing.length} players not seen</strong><span>{missing.map(({ player }) => player.name).join(', ')}</span></> : <strong>All roster members seen with this buff</strong>}</div><details><summary>Show all {coverage.length} players and uptime</summary><div className="long-buff-players">{coverage.map(({ player, uptime, presentAtPull }) => { const percent = uptime?.percent; const seen = (percent ?? 0) > 0 || presentAtPull; const activeSeconds = percent === null || percent === undefined ? null : durationMs / 1000 * percent / 100; return <div className={`long-buff-player ${seen ? '' : 'buff-missing'}`} key={player.id}><span><b>{player.name}</b><small>{seen ? presentAtPull ? 'Active at pull' : 'Uptime recorded' : 'Not seen in log'}</small></span><i><em style={{ width: `${Math.min(100, percent ?? 0)}%` }} /></i><strong>{percent === null || percent === undefined ? presentAtPull ? 'At pull' : '—' : `${percent.toFixed(0)}%`}</strong><small>{activeSeconds === null ? 'time n/a' : `${activeSeconds.toFixed(0)}s`}</small></div>})}</div></details></section>})}</div>}
     <p className="data-note">“Not seen” means no matching uptime or pull-start aura was returned for this player. Confirm class, assignment, and logging coverage before treating it as a missed buff.</p>
+  </article>
+}
+
+function ObservedRaidBuffCard({ rows }: { rows: Array<{ family: string; ability: string; target: string; provider: string; uptime_seconds: number; uptime_percent: number }> }) {
+  const grouped = new Map<string, typeof rows>()
+  rows.forEach((row) => grouped.set(row.family, [...(grouped.get(row.family) ?? []), row]))
+  return <article className="analysis-card observed-raid-buffs"><div className="card-heading"><div><h3>In-fight and party buffs</h3><p>Observed recipients and fight-relative uptime · no roster-wide missing checks</p></div><span>{grouped.size} EFFECTS</span></div>
+    {!rows.length ? <p className="analysis-empty">No tracked in-fight or party buffs were observed.</p> : <div className="observed-buff-grid">{[...grouped.entries()].map(([family, effects]) => <section key={family}><header><strong>{family}</strong><span>{new Set(effects.map((row) => row.target)).size} recipients</span></header>{effects.slice().sort((a, b) => b.uptime_percent - a.uptime_percent).slice(0, 8).map((row, index) => <div className="observed-buff-row" key={`${row.target}-${index}`}><span>{row.target}</span><i><em style={{ width: `${Math.min(100, row.uptime_percent)}%` }} /></i><b>{row.uptime_percent.toFixed(0)}%</b><small>{row.uptime_seconds.toFixed(0)}s</small></div>)}</section>)}</div>}
+    <p className="data-note">Totems, party auras, and cooldown buffs depend on group placement and assignments. This view reports recipients present in the log; it does not infer who should have received them.</p>
   </article>
 }
 
