@@ -27,6 +27,8 @@ def test_analyze_compressed_combat_log_tracks_debuff_provider_uptime_and_armor()
             "ability": "Expose Armor",
             "target": "Archimonde",
             "provider": "Rogue",
+            "provider_is_player": True,
+            "target_is_boss": True,
             "uptime_seconds": 10.0,
             "uptime_percent": 33.3,
             "fight_duration_seconds": 30.0,
@@ -36,6 +38,52 @@ def test_analyze_compressed_combat_log_tracks_debuff_provider_uptime_and_armor()
         }
     ]
     assert encounter["armor_reduction"][0]["estimated_armor_reduction"] == 3075
+
+
+def test_analyze_combat_log_classifies_non_player_boss_debuff_and_death_damage() -> None:
+    npc = 'Creature-9,"Shadow Fiend",0xa48,0x0'
+    player = 'Player-Dead,"Healer",0x514,0x0'
+    boss = 'Creature-Boss,"Archimonde",0xa48,0x0'
+    content = "\n".join(
+        [
+            "9/24/2026 20:00:00.0000  ENCOUNTER_START,622,\"Archimonde\",4,25",
+            f"9/24/2026 20:00:01.0000  SPELL_AURA_APPLIED,{npc},{boss},123,\"Curse of Weakness\",0x20,DEBUFF",
+            f"9/24/2026 20:00:04.0000  SPELL_DAMAGE,{npc},{player},123,\"Shadow Bolt\",0x20,350,0,0,0,0,0,false,false,false,false",
+            f"9/24/2026 20:00:04.1000  UNIT_DIED,{npc},{player}",
+            "9/24/2026 20:00:10.0000  ENCOUNTER_END,622,\"Archimonde\",4,25,0",
+        ]
+    ).encode()
+
+    encounter = analyze_combat_log(content)["encounters"][0]
+
+    assert encounter["debuffs"][0]["provider_is_player"] is False
+    assert encounter["debuffs"][0]["target_is_boss"] is True
+    assert encounter["deaths"][0]["last_hit"] == {
+        "source": "Shadow Fiend",
+        "ability": "Shadow Bolt",
+        "damage_type": "Shadow",
+        "amount": 350,
+    }
+    assert encounter["damage_sources"][0]["sources"][0]["amount"] == 350
+
+
+def test_analyze_combat_log_closes_attempt_when_next_encounter_starts() -> None:
+    npc = 'Creature-9,"Shadow Fiend",0xa48,0x0'
+    player = 'Player-Dead,"Healer",0x514,0x0'
+    content = "\n".join(
+        [
+            "9/24/2026 20:00:00.0000  ENCOUNTER_START,622,\"Archimonde\",4,25",
+            f"9/24/2026 20:00:03.0000  SPELL_DAMAGE,{npc},{player},123,\"Shadow Bolt\",0x20,350,0,0,0,0,0,false,false,false,false",
+            "9/24/2026 20:00:05.0000  ENCOUNTER_START,622,\"Archimonde\",4,25",
+            "9/24/2026 20:00:10.0000  ENCOUNTER_END,622,\"Archimonde\",4,25,1",
+        ]
+    ).encode()
+
+    first, second = analyze_combat_log(content)["encounters"]
+
+    assert first["duration_seconds"] == 5.0
+    assert first["damage_sources"][0]["sources"][0]["amount"] == 350
+    assert second["duration_seconds"] == 5.0
 
 
 def test_long_buff_coverage_uses_pull_state_and_full_fight_duration() -> None:

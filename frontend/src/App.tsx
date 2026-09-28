@@ -4,6 +4,7 @@ import './analysis.css'
 import './local-log.css'
 import './aura-coverage.css'
 import './long-buff.css'
+import './upload-analysis.css'
 import { Activity, ArrowLeft, ArrowUpRight, Check, CircleHelp, Clock3, Command, ExternalLink, LoaderCircle, Shield, Skull, Swords, Trophy } from 'lucide-react'
 
 type Health = { status: string; service: string }
@@ -43,12 +44,13 @@ type BenchmarkReference = { report_code: string; fight_id: number; title: string
 type Benchmarks = { status: 'available' | 'empty' | 'unavailable'; encounter: string | null; strictness: string; cohort_source: string; source: string; sample_size: number; match_basis: string[]; limitations: string[]; candidates: BenchmarkCandidate[]; reference_analyses: BenchmarkReference[] }
 type AbilityUptime = { name: string; percent: number | null }
 type SpellUse = { name: string; count: number }
-type LocalDebuff = { spell_id: number; ability: string; target: string; provider: string; uptime_seconds: number; uptime_percent: number; fight_duration_seconds: number; applications: number; armor_reduction: number; armor_reduction_note?: string }
+type LocalDebuff = { spell_id: number; ability: string; target: string; provider: string; provider_is_player: boolean; target_is_boss: boolean; uptime_seconds: number; uptime_percent: number; fight_duration_seconds: number; applications: number; armor_reduction: number; armor_reduction_note?: string }
 type LocalBuffPlayer = { id: string; name: string; uptime_seconds: number; uptime_percent: number; present_before_pull: boolean; status: string }
 type LocalBuff = { ability: string; covered_players: number; roster_size: number; players: LocalBuffPlayer[] }
-type LocalEncounter = { id: string; name: string; kill: boolean | null; duration_seconds: number; roster: Array<{ id: string; name: string }>; debuffs: LocalDebuff[]; long_buffs: LocalBuff[]; armor_reduction: Array<{ ability: string; estimated_armor_reduction: number; uptime_seconds: number; targets: number }> }
+type LocalDamageSource = { source: string; ability: string; damage_type: string; amount: number; hits: number }
+type LocalEncounter = { id: string; name: string; kill: boolean | null; duration_seconds: number; roster: Array<{ id: string; name: string }>; debuffs: LocalDebuff[]; long_buffs: LocalBuff[]; deaths: Array<{ timestamp_seconds: number; player: string; last_hit: LocalDamageSource | null }>; damage_sources: Array<{ player: string; sources: LocalDamageSource[] }>; armor_reduction: Array<{ ability: string; estimated_armor_reduction: number; uptime_seconds: number; targets: number }> }
 type LocalLog = { file_name: string; encounter_count: number; line_count: number; encounters: LocalEncounter[] }
-type PlayerStats = Actor & { specName: string | null; durationSeconds: number; casts: SpellUse[]; damage: number | null; dps: number | null; healing: number | null; hps: number | null; damageTaken: number | null; friendlyDamage: number | null; friendlyDamageReliable: boolean; friendlyDamageAbilities: Array<{ name: string; amount: number; hits: number }>; deaths: Array<Record<string, unknown>>; interrupts: Array<Record<string, unknown>>; interruptsAvailable: boolean; consumables: string[]; gear: Array<Record<string, unknown>>; averageItemLevel: number | null; enchantCount: number | null; gemCount: number | null; auras: string[]; uptimes: AbilityUptime[]; uptimeAverage: number | null; recentPercentile: number | null; bestPercentile: number | null }
+type PlayerStats = Actor & { specName: string | null; durationSeconds: number; casts: SpellUse[]; damage: number | null; dps: number | null; healing: number | null; hps: number | null; damageTaken: number | null; damageTakenSources: LocalDamageSource[]; friendlyDamage: number | null; friendlyDamageReliable: boolean; friendlyDamageAbilities: Array<{ name: string; amount: number; hits: number }>; deaths: Array<Record<string, unknown>>; interrupts: Array<Record<string, unknown>>; interruptsAvailable: boolean; consumables: string[]; gear: Array<Record<string, unknown>>; averageItemLevel: number | null; enchantCount: number | null; gemCount: number | null; auras: string[]; uptimes: AbilityUptime[]; uptimeAverage: number | null; recentPercentile: number | null; bestPercentile: number | null }
 
 async function getHealth(): Promise<Health> {
   const response = await fetch('/api/health')
@@ -164,6 +166,34 @@ function allRecords(value: unknown, output: Array<Record<string, unknown>> = [],
     for (const item of Object.values(parsed)) allRecords(item, output, depth + 1)
   }
   return output
+}
+
+function damageTakenBreakdown(row: Record<string, unknown> | undefined): LocalDamageSource[] {
+  if (!row) return []
+  const result = new Map<string, LocalDamageSource>()
+  for (const record of allRecords(row).slice(1)) {
+    const nestedAbility = isRecord(record.ability) ? record.ability : null
+    const ability = String(nestedAbility?.name ?? record.name ?? '')
+    const amount = numericValue(record, ['total', 'amount', 'damage'])
+    if (!ability || amount === null || amount <= 0) continue
+    const source = typeof record.sourceName === 'string' ? record.sourceName : isRecord(record.source) && typeof record.source.name === 'string' ? record.source.name : ''
+    const damageType = damageSchoolLabel(record.damageType ?? record.schoolName ?? record.school) ?? ''
+    const key = `${source}:${ability}:${damageType}`
+    const current = result.get(key) ?? { source, ability, damage_type: damageType, amount: 0, hits: 0 }
+    current.amount += amount
+    current.hits += numericValue(record, ['hits', 'hitCount', 'count']) ?? 0
+    result.set(key, current)
+  }
+  return [...result.values()].sort((a, b) => b.amount - a.amount).slice(0, 8)
+}
+
+function damageSchoolLabel(value: unknown): string | null {
+  if (typeof value === 'string' && value && !/^death$/i.test(value)) return value
+  const numericSchool = typeof value === 'number' ? value : typeof value === 'string' && /^0x[\da-f]+$/i.test(value) ? Number.parseInt(value, 16) : null
+  if (numericSchool === null || !Number.isFinite(numericSchool)) return null
+  const schoolTypes: Array<[number, string]> = [[1, 'Physical'], [2, 'Holy'], [4, 'Fire'], [8, 'Nature'], [16, 'Frost'], [32, 'Shadow'], [64, 'Arcane']]
+  const schools = schoolTypes.filter(([mask]) => numericSchool & mask).map(([, label]) => label)
+  return schools.length ? schools.join('/') : null
 }
 
 function actorId(row: Record<string, unknown>, role?: 'source' | 'target'): number | null {
@@ -282,6 +312,7 @@ function makePlayerStats(analysis: FightAnalysis): PlayerStats[] {
         healing: numericValue(healingRow, ['total', 'amount', 'healing']),
         hps: numericValue(healingRow, ['hps']) ?? (numericValue(healingRow, ['total', 'amount', 'healing']) !== null && durationSeconds > 0 ? (numericValue(healingRow, ['total', 'amount', 'healing']) as number) / durationSeconds : null),
         damageTaken: numericValue(takenRow, ['total', 'amount', 'damageTaken', 'damage']),
+        damageTakenSources: damageTakenBreakdown(takenRow),
         friendlyDamage: typeof friendlyDamageValue === 'number' && Number.isFinite(friendlyDamageValue) ? friendlyDamageValue : null,
         friendlyDamageReliable,
         friendlyDamageAbilities: typeof analysis.tables.friendly_damage_abilities === 'object' && analysis.tables.friendly_damage_abilities !== null && Array.isArray((analysis.tables.friendly_damage_abilities as Record<string, unknown>)[String(actor.id)]) ? ((analysis.tables.friendly_damage_abilities as Record<string, unknown>)[String(actor.id)] as Array<{ name: string; amount: number; hits: number }>) : [],
@@ -411,21 +442,42 @@ function LocalLogView({ log }: { log: LocalLog }) {
   const [selected, setSelected] = useState(0)
   const [wclUrl, setWclUrl] = useState('')
   const encounter = log.encounters[Math.min(selected, log.encounters.length - 1)]
-  const debuffsByPlayer = new Map<string, LocalDebuff[]>()
-  encounter?.debuffs.forEach((row) => debuffsByPlayer.set(row.provider, [...(debuffsByPlayer.get(row.provider) ?? []), row]))
-  const debuffGroups = [...debuffsByPlayer.entries()].sort(([a], [b]) => a.localeCompare(b))
-  return <section className="local-log-panel"><div className="card-heading"><div><h3>Combat log overview</h3><p>{log.file_name} · {log.encounter_count} encounters</p></div><span>{log.line_count.toLocaleString()} LINES</span></div>
-    <label className="local-select-label" htmlFor="encounter-select">ENCOUNTER</label><select id="encounter-select" value={selected} onChange={(event) => setSelected(Number(event.target.value))}>{log.encounters.map((fight, index) => <option key={`${fight.id}-${index}`} value={index}>{fight.name} · {fight.kill ? 'Kill' : fight.kill === false ? 'Wipe' : 'Unknown'}</option>)}</select>
-    {encounter && <><div className="local-statline"><strong>{encounter.name}</strong><span>{Math.floor(encounter.duration_seconds / 60)}:{String(Math.floor(encounter.duration_seconds % 60)).padStart(2, '0')}</span><span>{encounter.kill ? 'KILL' : encounter.kill === false ? 'WIPE' : 'INCOMPLETE'}</span></div>
-      <section className="local-aura-section"><div className="local-debuff-heading"><div><h4>Short debuffs applied during the fight</h4><span>Grouped by player · sorted by uptime on target</span></div><span>{encounter.debuffs.length} TARGET EFFECTS</span></div>
-      {debuffGroups.length ? <div className="player-debuff-groups">{debuffGroups.map(([provider, rows]) => <article className="player-debuff-group" key={provider}><header><strong>{provider}</strong><span>{rows.length} effects</span></header>{[...rows].sort((a, b) => b.uptime_percent - a.uptime_percent || a.ability.localeCompare(b.ability)).map((row, index) => <div className="local-debuff-row" key={`${row.spell_id}-${row.target}-${index}`}><div><strong>{row.ability}</strong><small>→ {row.target} · {row.applications} applications</small></div><span className="uptime-meter"><i style={{ width: `${Math.min(100, row.uptime_percent)}%` }} /></span><b>{row.uptime_percent.toFixed(1)}%</b><small>{row.uptime_seconds}s / {encounter.duration_seconds.toFixed(0)}s</small></div>)}</article>)}</div> : <p className="analysis-empty">No player-applied debuffs were recorded during this encounter.</p>}</section>
-      <section className="long-buff-section"><div className="local-debuff-heading"><div><h4>Long-duration class buffs</h4><span>Coverage at pull · uptime over this fight</span></div><span>{encounter.long_buffs.reduce((sum, buff) => sum + buff.covered_players, 0)} / {encounter.long_buffs.reduce((sum, buff) => sum + buff.roster_size, 0)} BUFF SLOTS</span></div>
-      {encounter.long_buffs.length ? <div className="long-buff-grid">{encounter.long_buffs.map((buff) => <article className="long-buff-card" key={buff.ability}><header><strong>{buff.ability}</strong><span>{buff.covered_players} / {buff.roster_size} seen</span></header><div className="long-buff-players">{buff.players.map((player) => <div className={`long-buff-player ${player.uptime_percent === 0 ? 'buff-missing' : ''}`} key={player.id}><span><b>{player.name}</b><small>{player.uptime_percent === 0 ? 'Not seen in log' : player.present_before_pull ? 'Active at pull' : 'Applied during fight'}</small></span><i><em style={{ width: `${Math.min(100, player.uptime_percent)}%` }} /></i><strong>{player.uptime_percent.toFixed(0)}%</strong><small>{player.uptime_seconds}s</small></div>)}</div></article>)}</div> : <p className="analysis-empty">No recognized long-duration class buffs were observed on this encounter roster.</p>}
-      <p className="data-note">Only buffs recorded on at least one player are listed. “Not seen” means the log contains no application or active interval for that player; verify assignments and logging coverage before treating it as a miss.</p></section>
-      <div className="local-debuff-heading"><h4>Estimated armor reduction by ability</h4><span>Spell values are estimates</span></div>{encounter.armor_reduction.length ? <div className="armor-grid">{encounter.armor_reduction.map((item) => <article key={item.ability}><span>{item.ability}</span><strong>{item.estimated_armor_reduction.toLocaleString()} armor</strong><small>{item.uptime_seconds}s applied · {item.targets} targets</small></article>)}</div> : <p className="analysis-empty">No recognized armor-reduction debuffs were recorded.</p>}
-      <details className="local-compare"><summary>Compare with a Warcraft Logs report</summary><form onSubmit={(event) => { event.preventDefault(); const match = wclUrl.match(/\/reports\/([A-Za-z0-9]+)/); if (match) window.open(`/reports/${match[1]}`, '_blank', 'noopener,noreferrer') }}><label htmlFor="local-wcl-url">PUBLIC FRESH REPORT URL</label><div className="input-row"><input id="local-wcl-url" type="url" value={wclUrl} onChange={(event) => setWclUrl(event.target.value)} placeholder="https://fresh.warcraftlogs.com/reports/…" required /><button type="submit">OPEN COMPARISON <ExternalLink size={14} /></button></div></form><small>Opens the WCL analysis in a second tab so you can compare encounter and debuff views side by side.</small></details>
-    </>}
+  if (!encounter) return null
+  const bossPlayerDebuffs = encounter.debuffs.filter((row) => row.target_is_boss && row.provider_is_player)
+  const bossOtherDebuffs = encounter.debuffs.filter((row) => row.target_is_boss && !row.provider_is_player)
+  const otherEnemyDebuffs = encounter.debuffs.filter((row) => !row.target_is_boss)
+  const totalDamageTaken = encounter.damage_sources.reduce((total, row) => total + row.sources.reduce((sum, source) => sum + source.amount, 0), 0)
+  const maximumDamage = Math.max(1, ...encounter.damage_sources.flatMap((row) => row.sources.map((source) => source.amount)))
+  const formatFightTime = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`
+  return <section className="local-log-panel"><div className="card-heading"><div><h3>Combat log overview</h3><p>{log.file_name} · {log.encounter_count} boss encounters</p></div><span>{log.line_count.toLocaleString()} LINES</span></div>
+    <div className="local-encounter-control"><label className="local-select-label" htmlFor="encounter-select">BOSS ENCOUNTER</label><select id="encounter-select" value={selected} onChange={(event) => setSelected(Number(event.target.value))}>{log.encounters.map((fight, index) => <option key={`${fight.id}-${index}`} value={index}>{fight.name} · {fight.kill ? 'Kill' : fight.kill === false ? 'Wipe' : 'Unknown'}</option>)}</select></div>
+    <div className="local-statline"><strong>{encounter.name}</strong><span>{formatFightTime(encounter.duration_seconds)}</span><span>{encounter.kill ? 'KILL' : encounter.kill === false ? 'WIPE' : 'INCOMPLETE'}</span></div>
+    <div className="local-summary-grid"><article><span>FIGHT LENGTH</span><strong>{formatFightTime(encounter.duration_seconds)}</strong><small>selected encounter</small></article><article><span>ROSTER</span><strong>{encounter.roster.length}</strong><small>players observed</small></article><article className={encounter.deaths.length ? 'local-summary-alert' : ''}><span>DEATHS</span><strong>{encounter.deaths.length}</strong><small>player deaths recorded</small></article><article><span>DAMAGE TAKEN</span><strong>{totalDamageTaken.toLocaleString()}</strong><small>logged player damage</small></article></div>
+    <section className="local-analysis-section"><div className="local-section-heading"><div><span className="local-section-kicker">01 / SURVIVAL</span><h4>Critical moments</h4></div><span>{encounter.deaths.length} DEATHS</span></div>
+      {encounter.deaths.length ? <><div className="local-death-track"><span className="local-track-start">0:00</span><div>{encounter.deaths.map((death, index) => <i key={`${death.player}-${index}`} style={{ left: `${Math.min(100, 100 * death.timestamp_seconds / Math.max(1, encounter.duration_seconds))}%` }} title={`${death.player} · ${formatFightTime(death.timestamp_seconds)}`} />)}</div><span>{formatFightTime(encounter.duration_seconds)}</span></div><div className="local-death-list">{encounter.deaths.map((death, index) => <article key={`${death.player}-${index}`}><time>{formatFightTime(death.timestamp_seconds)}</time><strong>{death.player}</strong>{death.last_hit ? <span>{death.last_hit.ability} · {death.last_hit.damage_type} · {death.last_hit.amount.toLocaleString()} damage <small>from {death.last_hit.source}</small></span> : <span>Final damaging event unavailable in this log slice</span>}</article>)}</div></> : <p className="analysis-empty">No player deaths were recorded during this encounter.</p>}
+      <p className="data-note">Death recaps show the last logged damage event immediately before the death when available; this may not prove the single lethal blow.</p>
+    </section>
+    <section className="local-analysis-section"><div className="local-section-heading"><div><span className="local-section-kicker">02 / INCOMING DAMAGE</span><h4>Damage taken · source breakdown</h4></div><span>{encounter.damage_sources.reduce((sum, row) => sum + row.sources.length, 0)} SOURCES</span></div>
+      {encounter.damage_sources.length ? <div className="local-player-source-grid">{encounter.damage_sources.map((player) => <article key={player.player}><header><strong>{player.player}</strong><span>{player.sources.reduce((sum, source) => sum + source.amount, 0).toLocaleString()} total</span></header>{player.sources.slice(0, 5).map((source) => <div className="local-source-row" key={`${source.source}-${source.ability}-${source.damage_type}`}><span><b>{source.ability}</b><small>{source.source} · {source.damage_type} · {source.hits} hits</small></span><i><em style={{ width: `${Math.max(2, source.amount * 100 / maximumDamage)}%` }} /></i><strong>{source.amount.toLocaleString()}</strong></div>)}</article>)}</div> : <p className="analysis-empty">No player damage events were recorded for this encounter.</p>}
+    </section>
+    <section className="local-analysis-section"><div className="local-section-heading"><div><span className="local-section-kicker">03 / RAID DEBUFFS</span><h4>Short debuffs</h4></div><span>{encounter.debuffs.length} EFFECTS</span></div><p className="local-section-note">Uptime is measured against the selected boss fight. Source identity distinguishes player applications from boss, pet, and environmental sources.</p>
+      <LocalDebuffBucket title="On the boss · applied by players" rows={bossPlayerDebuffs} duration={encounter.duration_seconds} />
+      <LocalDebuffBucket title="On the boss · other sources" rows={bossOtherDebuffs} duration={encounter.duration_seconds} />
+      <LocalDebuffBucket title="On other enemies" rows={otherEnemyDebuffs} duration={encounter.duration_seconds} />
+    </section>
+    <section className="long-buff-section local-analysis-section"><div className="local-section-heading"><div><span className="local-section-kicker">04 / PRE-PULL COVERAGE</span><h4>Long-duration class buffs</h4></div><span>{encounter.long_buffs.length} BUFF TYPES</span></div><p className="local-section-note">Missing coverage is surfaced first; expand a buff to inspect the complete roster and uptime.</p>
+      {encounter.long_buffs.length ? <div className="long-buff-grid">{encounter.long_buffs.map((buff) => { const missing = buff.players.filter((player) => player.uptime_percent === 0); const covered = buff.players.length - missing.length; return <article className="long-buff-card" key={buff.ability}><header><strong>{buff.ability}</strong><span>{missing.length ? `${missing.length} missing` : `${covered} / ${buff.roster_size} covered`}</span></header><div className="buff-missing-summary">{missing.length ? <><strong>{missing.length} players not seen</strong><span>{missing.map((player) => player.name).join(', ')}</span></> : <strong>All roster members seen with this buff</strong>}</div><details><summary>Show all {buff.players.length} players and uptime</summary><div className="long-buff-players">{buff.players.map((player) => <div className={`long-buff-player ${player.uptime_percent === 0 ? 'buff-missing' : ''}`} key={player.id}><span><b>{player.name}</b><small>{player.uptime_percent === 0 ? 'Not seen in log' : player.present_before_pull ? 'Active at pull' : 'Applied during fight'}</small></span><i><em style={{ width: `${Math.min(100, player.uptime_percent)}%` }} /></i><strong>{player.uptime_percent.toFixed(0)}%</strong><small>{player.uptime_seconds}s</small></div>)}</div></details></article>})}</div> : <p className="analysis-empty">No recognized long-duration class buffs were observed on this encounter roster.</p>}
+      <p className="data-note">Only buffs recorded on at least one player are listed. “Not seen” means the log contains no application or active interval for that player; verify assignments and logging coverage before treating it as a miss.</p>
+    </section>
+    <section className="local-analysis-section"><div className="local-section-heading"><div><span className="local-section-kicker">05 / ARMOR</span><h4>Estimated armor reduction</h4></div><span>ESTIMATES</span></div>{encounter.armor_reduction.length ? <div className="armor-grid">{encounter.armor_reduction.map((item) => <article key={item.ability}><span>{item.ability}</span><strong>{item.estimated_armor_reduction.toLocaleString()} armor</strong><small>{item.uptime_seconds}s applied · {item.targets} targets</small></article>)}</div> : <p className="analysis-empty">No recognized armor-reduction debuffs were recorded.</p>}</section>
+    <details className="local-compare"><summary>Compare with a Warcraft Logs report</summary><form onSubmit={(event) => { event.preventDefault(); const match = wclUrl.match(/\/reports\/([A-Za-z0-9]+)/); if (match) window.open(`/reports/${match[1]}`, '_blank', 'noopener,noreferrer') }}><label htmlFor="local-wcl-url">PUBLIC FRESH REPORT URL</label><div className="input-row"><input id="local-wcl-url" type="url" value={wclUrl} onChange={(event) => setWclUrl(event.target.value)} placeholder="https://fresh.warcraftlogs.com/reports/…" required /><button type="submit">OPEN COMPARISON <ExternalLink size={14} /></button></div></form><small>Opens the WCL report analyzer in a second tab for side-by-side review.</small></details>
   </section>
+}
+
+function LocalDebuffBucket({ title, rows, duration }: { title: string; rows: LocalDebuff[]; duration: number }) {
+  const groups = new Map<string, LocalDebuff[]>()
+  rows.forEach((row) => groups.set(row.provider || 'Unknown source', [...(groups.get(row.provider || 'Unknown source') ?? []), row]))
+  return <article className="local-debuff-bucket"><header><strong>{title}</strong><span>{rows.length} effects</span></header>{rows.length ? <div className="player-debuff-groups">{[...groups.entries()].map(([provider, effects]) => <div className="player-debuff-group" key={provider}><h5>{provider}</h5>{[...effects].sort((a, b) => b.uptime_percent - a.uptime_percent || a.ability.localeCompare(b.ability)).map((row, index) => <div className="local-debuff-row" key={`${row.spell_id}-${row.target}-${index}`}><div><strong>{row.ability}</strong><small>{row.target} · {row.applications} applications</small></div><span className="uptime-meter"><i style={{ width: `${Math.min(100, row.uptime_percent)}%` }} /></span><b>{row.uptime_percent.toFixed(1)}%</b><small>{row.uptime_seconds.toFixed(1)}s / {duration.toFixed(0)}s</small></div>)}</div>)}</div> : <p className="analysis-empty">No effects in this category were recorded.</p>}</article>
 }
 
 function ReportPage({ code }: { code: string }) {
@@ -513,10 +565,10 @@ function ReportPage({ code }: { code: string }) {
         </>}
       </section>
       <section className="fight-log">
-        <div className="section-heading"><div><span className="step">04</span><h2>Fight log</h2></div><span>{fights.data?.length ?? '—'} ENTRIES</span></div>
+        <div className="section-heading"><div><span className="step">04</span><h2>Other encounters</h2></div><span>{fights.data ? `${fights.data.filter((fight) => fight.encounter_id === 0).length} TRASH` : '—'}</span></div>
         {fights.isLoading && <div className="minor-loading"><LoaderCircle className="spin" size={14} /> LOADING FIGHTS</div>}
         {fights.isError && <div className="inline-error">Fight list unavailable: {fights.error.message}</div>}
-        {fights.data?.filter((fight) => fight.encounter_id === 0).map((fight) => <div className="trash-row" key={fight.fight_id}><span>TRASH</span><strong>{fight.name}</strong><span>{formatDuration(fight.duration_ms)}</span></div>)}
+        {fights.data?.some((fight) => fight.encounter_id === 0) && <details className="trash-encounters"><summary>Trash encounters · {fights.data.filter((fight) => fight.encounter_id === 0).length}</summary><div>{fights.data.filter((fight) => fight.encounter_id === 0).slice(0, 12).map((fight) => <div className="trash-row" key={fight.fight_id}><span>TRASH</span><strong>{fight.name}</strong><span>{formatDuration(fight.duration_ms)}</span></div>)}{fights.data.filter((fight) => fight.encounter_id === 0).length > 12 && <small>{fights.data.filter((fight) => fight.encounter_id === 0).length - 12} more trash entries hidden</small>}</div></details>}
       </section>
     </>}
     <Footer />
@@ -692,8 +744,10 @@ function playerSuggestions(player: PlayerStats): string[] {
 function PlayerDetail({ player }: { player: PlayerStats }) {
   const enchantItems = player.gear.filter((item) => item.permanentEnchantName ?? item.permanentEnchant ?? item.enchantName ?? item.enchant)
   const gemItems = player.gear.flatMap((item) => Array.isArray(item.gems) ? item.gems.filter((gem) => gem !== null && gem !== 0 && gem !== '').map((gem) => ({ item, gem })) : [])
+  const maxDamageSource = Math.max(1, ...player.damageTakenSources.map((source) => source.amount))
   return <details className="player-detail"><summary>Review player</summary><div className="player-detail-content">
     <section><h4>Evidence to review</h4><ul className="suggestion-list">{playerSuggestions(player).map((note) => <li key={note}>{note}</li>)}</ul></section>
+    <section><h4>Damage taken sources</h4>{player.damageTakenSources.length ? <div className="player-damage-sources">{player.damageTakenSources.slice(0, 5).map((source) => <div key={`${source.source}-${source.ability}-${source.damage_type}`}><span><b>{source.ability}</b><small>{source.source || 'Source not identified'}{source.damage_type ? ` · ${source.damage_type}` : ''}</small></span><i><em style={{ width: `${Math.max(2, source.amount * 100 / maxDamageSource)}%` }} /></i><strong>{formatMetric(source.amount)}</strong></div>)}</div> : <p className="analysis-empty">Warcraft Logs did not return a readable ability breakdown for damage taken.</p>}</section>
     {(player.recentPercentile !== null || player.bestPercentile !== null) && <section><h4>WCL performance context</h4><p><b>Recent parses:</b> {player.recentPercentile === null ? 'Unavailable' : `${player.recentPercentile.toFixed(1)} percentile`}</p><p><b>Best-score rankings:</b> {player.bestPercentile === null ? 'Unavailable' : `${player.bestPercentile.toFixed(1)} percentile`}</p><p>These percentiles compare this pull against Warcraft Logs rankings, not against this guild's assignments or a fully composition-matched cohort.</p></section>}
     <section><h4>Uptime by ability</h4>{player.uptimes.length ? <ul>{player.uptimes.map((ability) => <li key={ability.name}><span>{ability.name}</span><strong>{ability.percent === null ? '—' : `${ability.percent.toFixed(1)}%`}</strong></li>)}</ul> : <p className="analysis-empty">Player uptime detail not returned for this pull.</p>}</section>
     <section><h4>Itemization</h4><div className="gear-summary"><span>Average item level <b>{player.averageItemLevel === null ? '—' : player.averageItemLevel.toFixed(1)}</b></span><span>Enchants found <b>{player.enchantCount === null ? '—' : player.enchantCount}</b></span><span>Gems found <b>{player.gemCount === null ? '—' : player.gemCount}</b></span></div>
@@ -750,10 +804,14 @@ function TimelineCard({ deaths, interrupts, analysis }: { deaths: Array<Record<s
         const ability = isRecord(row.killingAbility) ? row.killingAbility.name : isRecord(row.ability) ? row.ability.name : row.abilityName
         const source = actorName(row, kind === 'death' ? 'source' : 'target', analysis.actors)
         const actor = actorName(row, kind === 'death' ? 'target' : 'source', analysis.actors)
-        return <div className="moment-row" key={`${kind}-row-${index}`}><time>{formatDuration(relative)}</time><span className={`moment-tag ${kind}`}>{kind === 'death' ? 'DEATH' : 'KICK'}</span><strong>{actor}</strong><span>{typeof ability === 'string' ? ability : kind === 'death' ? 'Final recorded event' : 'Interrupt landed'}</span>{kind === 'death' && source !== 'Unknown' && <small>Source: {source}</small>}</div>
+        const killingAbility = isRecord(row.killingAbility) ? row.killingAbility : null
+        const damageType = damageSchoolLabel(row.damageType ?? row.school ?? killingAbility?.school ?? killingAbility?.schoolName)
+        const amount = numericValue(row, ['amount', 'damage', 'killingBlow'])
+        const eventSummary = typeof ability === 'string' ? `${ability}${damageType ? ` · ${damageType} damage` : ''}` : kind === 'death' ? 'Killing ability unavailable' : 'Interrupt landed'
+        return <div className="moment-row" key={`${kind}-row-${index}`}><time>{formatDuration(relative)}</time><span className={`moment-tag ${kind}`}>{kind === 'death' ? 'DEATH' : 'KICK'}</span><strong>{actor}</strong><span>{eventSummary}</span>{kind === 'death' && <small>{source !== 'Unknown' ? `Source: ${source}` : 'Damage source unavailable'}{amount === null ? '' : ` · ${formatMetric(amount)} damage`}</small>}</div>
       })}</div>
     </>}
-    <p className="data-note">Death markers show the recorded death moment and available killing ability. A full pre-death damage recap needs incoming damage events and encounter mechanics.</p>
+    <p className="data-note">Death rows use Warcraft Logs’ recorded killing ability and damage school when available. The damage taken review shows the encounter’s largest recorded abilities for each player.</p>
   </article>
 }
 
@@ -794,8 +852,8 @@ function LongBuffCoverageCard({ players, durationMs }: { players: PlayerStats[];
     })
     return coverage.some((item) => item.uptime || item.presentAtPull) ? [{ family, coverage }] : []
   })
-  return <article className="analysis-card long-buff-coverage"><div className="card-heading"><div><h3>Long-duration class buffs</h3><p>Buffs observed at pull and their uptime across this fight ({(durationMs / 1000).toFixed(0)}s)</p></div><span>{families.length} BUFF TYPES</span></div>
-    {!families.length ? <p className="analysis-empty">No recognized long-duration class buffs were returned for this pull.</p> : <div className="long-buff-grid">{families.map(({ family, coverage }) => { const covered = coverage.filter(({ uptime, presentAtPull }) => (uptime?.percent ?? 0) > 0 || presentAtPull).length; return <section className="long-buff-card" key={family.name}><header><strong>{family.name}</strong><span>{covered} / {coverage.length} seen</span></header><div className="long-buff-players">{coverage.map(({ player, uptime, presentAtPull }) => { const percent = uptime?.percent; const seen = (percent ?? 0) > 0 || presentAtPull; const activeSeconds = percent === null || percent === undefined ? null : durationMs / 1000 * percent / 100; return <div className={`long-buff-player ${seen ? '' : 'buff-missing'}`} key={player.id}><span><b>{player.name}</b><small>{seen ? presentAtPull ? 'Active at pull' : 'Uptime recorded' : 'Not seen in log'}</small></span><i><em style={{ width: `${Math.min(100, percent ?? 0)}%` }} /></i><strong>{percent === null || percent === undefined ? presentAtPull ? 'At pull' : '—' : `${percent.toFixed(0)}%`}</strong><small>{activeSeconds === null ? 'time n/a' : `${activeSeconds.toFixed(0)}s`}</small></div>})}</div></section>})}</div>}
+  return <article className="analysis-card long-buff-coverage"><div className="card-heading"><div><h3>Long-duration class buffs</h3><p>Missing coverage first · full uptime across this fight ({(durationMs / 1000).toFixed(0)}s)</p></div><span>{families.length} BUFF TYPES</span></div>
+    {!families.length ? <p className="analysis-empty">No recognized long-duration class buffs were returned for this pull.</p> : <div className="long-buff-grid">{families.map(({ family, coverage }) => { const missing = coverage.filter(({ uptime, presentAtPull }) => !((uptime?.percent ?? 0) > 0 || presentAtPull)); const covered = coverage.length - missing.length; return <section className="long-buff-card" key={family.name}><header><strong>{family.name}</strong><span>{missing.length ? `${missing.length} missing` : `${covered} / ${coverage.length} covered`}</span></header><div className="buff-missing-summary">{missing.length ? <><strong>{missing.length} players not seen</strong><span>{missing.map(({ player }) => player.name).join(', ')}</span></> : <strong>All roster members seen with this buff</strong>}</div><details><summary>Show all {coverage.length} players and uptime</summary><div className="long-buff-players">{coverage.map(({ player, uptime, presentAtPull }) => { const percent = uptime?.percent; const seen = (percent ?? 0) > 0 || presentAtPull; const activeSeconds = percent === null || percent === undefined ? null : durationMs / 1000 * percent / 100; return <div className={`long-buff-player ${seen ? '' : 'buff-missing'}`} key={player.id}><span><b>{player.name}</b><small>{seen ? presentAtPull ? 'Active at pull' : 'Uptime recorded' : 'Not seen in log'}</small></span><i><em style={{ width: `${Math.min(100, percent ?? 0)}%` }} /></i><strong>{percent === null || percent === undefined ? presentAtPull ? 'At pull' : '—' : `${percent.toFixed(0)}%`}</strong><small>{activeSeconds === null ? 'time n/a' : `${activeSeconds.toFixed(0)}s`}</small></div>})}</div></details></section>})}</div>}
     <p className="data-note">“Not seen” means no matching uptime or pull-start aura was returned for this player. Confirm class, assignment, and logging coverage before treating it as a missed buff.</p>
   </article>
 }
