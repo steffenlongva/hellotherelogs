@@ -2,6 +2,8 @@ import { FormEvent, ReactNode, useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import './analysis.css'
 import './local-log.css'
+import './aura-coverage.css'
+import './long-buff.css'
 import { Activity, ArrowLeft, ArrowUpRight, Check, CircleHelp, Clock3, Command, ExternalLink, LoaderCircle, Shield, Skull, Swords, Trophy } from 'lucide-react'
 
 type Health = { status: string; service: string }
@@ -41,8 +43,10 @@ type BenchmarkReference = { report_code: string; fight_id: number; title: string
 type Benchmarks = { status: 'available' | 'empty' | 'unavailable'; encounter: string | null; strictness: string; cohort_source: string; source: string; sample_size: number; match_basis: string[]; limitations: string[]; candidates: BenchmarkCandidate[]; reference_analyses: BenchmarkReference[] }
 type AbilityUptime = { name: string; percent: number | null }
 type SpellUse = { name: string; count: number }
-type LocalDebuff = { spell_id: number; ability: string; target: string; provider: string; uptime_seconds: number; uptime_percent: number; armor_reduction: number; armor_reduction_note?: string }
-type LocalEncounter = { id: string; name: string; kill: boolean | null; duration_seconds: number; debuffs: LocalDebuff[]; armor_reduction: Array<{ ability: string; estimated_armor_reduction: number; uptime_seconds: number; targets: number }> }
+type LocalDebuff = { spell_id: number; ability: string; target: string; provider: string; uptime_seconds: number; uptime_percent: number; fight_duration_seconds: number; applications: number; armor_reduction: number; armor_reduction_note?: string }
+type LocalBuffPlayer = { id: string; name: string; uptime_seconds: number; uptime_percent: number; present_before_pull: boolean; status: string }
+type LocalBuff = { ability: string; covered_players: number; roster_size: number; players: LocalBuffPlayer[] }
+type LocalEncounter = { id: string; name: string; kill: boolean | null; duration_seconds: number; roster: Array<{ id: string; name: string }>; debuffs: LocalDebuff[]; long_buffs: LocalBuff[]; armor_reduction: Array<{ ability: string; estimated_armor_reduction: number; uptime_seconds: number; targets: number }> }
 type LocalLog = { file_name: string; encounter_count: number; line_count: number; encounters: LocalEncounter[] }
 type PlayerStats = Actor & { specName: string | null; durationSeconds: number; casts: SpellUse[]; damage: number | null; dps: number | null; healing: number | null; hps: number | null; damageTaken: number | null; friendlyDamage: number | null; friendlyDamageReliable: boolean; friendlyDamageAbilities: Array<{ name: string; amount: number; hits: number }>; deaths: Array<Record<string, unknown>>; interrupts: Array<Record<string, unknown>>; interruptsAvailable: boolean; consumables: string[]; gear: Array<Record<string, unknown>>; averageItemLevel: number | null; enchantCount: number | null; gemCount: number | null; auras: string[]; uptimes: AbilityUptime[]; uptimeAverage: number | null; recentPercentile: number | null; bestPercentile: number | null }
 
@@ -407,11 +411,17 @@ function LocalLogView({ log }: { log: LocalLog }) {
   const [selected, setSelected] = useState(0)
   const [wclUrl, setWclUrl] = useState('')
   const encounter = log.encounters[Math.min(selected, log.encounters.length - 1)]
+  const debuffsByPlayer = new Map<string, LocalDebuff[]>()
+  encounter?.debuffs.forEach((row) => debuffsByPlayer.set(row.provider, [...(debuffsByPlayer.get(row.provider) ?? []), row]))
+  const debuffGroups = [...debuffsByPlayer.entries()].sort(([a], [b]) => a.localeCompare(b))
   return <section className="local-log-panel"><div className="card-heading"><div><h3>Combat log overview</h3><p>{log.file_name} · {log.encounter_count} encounters</p></div><span>{log.line_count.toLocaleString()} LINES</span></div>
     <label className="local-select-label" htmlFor="encounter-select">ENCOUNTER</label><select id="encounter-select" value={selected} onChange={(event) => setSelected(Number(event.target.value))}>{log.encounters.map((fight, index) => <option key={`${fight.id}-${index}`} value={index}>{fight.name} · {fight.kill ? 'Kill' : fight.kill === false ? 'Wipe' : 'Unknown'}</option>)}</select>
     {encounter && <><div className="local-statline"><strong>{encounter.name}</strong><span>{Math.floor(encounter.duration_seconds / 60)}:{String(Math.floor(encounter.duration_seconds % 60)).padStart(2, '0')}</span><span>{encounter.kill ? 'KILL' : encounter.kill === false ? 'WIPE' : 'INCOMPLETE'}</span></div>
-      <div className="local-debuff-heading"><h4>Encounter debuffs</h4><span>Measured aura uptime</span></div>
-      {encounter.debuffs.length ? <div className="local-debuff-list">{encounter.debuffs.slice(0, 40).map((row, index) => <div className="local-debuff-row" key={`${row.spell_id}-${row.target}-${row.provider}-${index}`}><div><strong>{row.ability}</strong><small>{row.provider} → {row.target}</small></div><span className="uptime-meter"><i style={{ width: `${Math.min(100, row.uptime_percent)}%` }} /></span><b>{row.uptime_percent}%</b><small>{row.uptime_seconds}s</small></div>)}</div> : <p className="analysis-empty">No encounter debuffs found in this log segment.</p>}
+      <section className="local-aura-section"><div className="local-debuff-heading"><div><h4>Short debuffs applied during the fight</h4><span>Grouped by player · sorted by uptime on target</span></div><span>{encounter.debuffs.length} TARGET EFFECTS</span></div>
+      {debuffGroups.length ? <div className="player-debuff-groups">{debuffGroups.map(([provider, rows]) => <article className="player-debuff-group" key={provider}><header><strong>{provider}</strong><span>{rows.length} effects</span></header>{[...rows].sort((a, b) => b.uptime_percent - a.uptime_percent || a.ability.localeCompare(b.ability)).map((row, index) => <div className="local-debuff-row" key={`${row.spell_id}-${row.target}-${index}`}><div><strong>{row.ability}</strong><small>→ {row.target} · {row.applications} applications</small></div><span className="uptime-meter"><i style={{ width: `${Math.min(100, row.uptime_percent)}%` }} /></span><b>{row.uptime_percent.toFixed(1)}%</b><small>{row.uptime_seconds}s / {encounter.duration_seconds.toFixed(0)}s</small></div>)}</article>)}</div> : <p className="analysis-empty">No player-applied debuffs were recorded during this encounter.</p>}</section>
+      <section className="long-buff-section"><div className="local-debuff-heading"><div><h4>Long-duration class buffs</h4><span>Coverage at pull · uptime over this fight</span></div><span>{encounter.long_buffs.reduce((sum, buff) => sum + buff.covered_players, 0)} / {encounter.long_buffs.reduce((sum, buff) => sum + buff.roster_size, 0)} BUFF SLOTS</span></div>
+      {encounter.long_buffs.length ? <div className="long-buff-grid">{encounter.long_buffs.map((buff) => <article className="long-buff-card" key={buff.ability}><header><strong>{buff.ability}</strong><span>{buff.covered_players} / {buff.roster_size} seen</span></header><div className="long-buff-players">{buff.players.map((player) => <div className={`long-buff-player ${player.uptime_percent === 0 ? 'buff-missing' : ''}`} key={player.id}><span><b>{player.name}</b><small>{player.uptime_percent === 0 ? 'Not seen in log' : player.present_before_pull ? 'Active at pull' : 'Applied during fight'}</small></span><i><em style={{ width: `${Math.min(100, player.uptime_percent)}%` }} /></i><strong>{player.uptime_percent.toFixed(0)}%</strong><small>{player.uptime_seconds}s</small></div>)}</div></article>)}</div> : <p className="analysis-empty">No recognized long-duration class buffs were observed on this encounter roster.</p>}
+      <p className="data-note">Only buffs recorded on at least one player are listed. “Not seen” means the log contains no application or active interval for that player; verify assignments and logging coverage before treating it as a miss.</p></section>
       <div className="local-debuff-heading"><h4>Estimated armor reduction by ability</h4><span>Spell values are estimates</span></div>{encounter.armor_reduction.length ? <div className="armor-grid">{encounter.armor_reduction.map((item) => <article key={item.ability}><span>{item.ability}</span><strong>{item.estimated_armor_reduction.toLocaleString()} armor</strong><small>{item.uptime_seconds}s applied · {item.targets} targets</small></article>)}</div> : <p className="analysis-empty">No recognized armor-reduction debuffs were recorded.</p>}
       <details className="local-compare"><summary>Compare with a Warcraft Logs report</summary><form onSubmit={(event) => { event.preventDefault(); const match = wclUrl.match(/\/reports\/([A-Za-z0-9]+)/); if (match) window.open(`/reports/${match[1]}`, '_blank', 'noopener,noreferrer') }}><label htmlFor="local-wcl-url">PUBLIC FRESH REPORT URL</label><div className="input-row"><input id="local-wcl-url" type="url" value={wclUrl} onChange={(event) => setWclUrl(event.target.value)} placeholder="https://fresh.warcraftlogs.com/reports/…" required /><button type="submit">OPEN COMPARISON <ExternalLink size={14} /></button></div></form><small>Opens the WCL analysis in a second tab so you can compare encounter and debuff views side by side.</small></details>
     </>}
@@ -494,9 +504,10 @@ function ReportPage({ code }: { code: string }) {
             <LeaderCard title="Friendly fire dealt" players={metricLeaders('friendlyDamage')} metric="friendlyDamage" tint="lavender" />
           </div>
           <ClassRoster players={playerStats} deathsAvailable={eventDataAvailable(analysis.data.events.deaths)} interruptsAvailable={eventDataAvailable(analysis.data.events.interrupts)} friendlyDamageComplete={analysis.data.tables.friendly_damage_complete === true} />
+          <LongBuffCoverageCard players={playerStats} durationMs={analysis.data.fight.duration_ms} />
           <div className="analysis-grid">
-            <UptimeCard title="Raid buff coverage" sources={[{ label: 'Buff', value: analysis.data.tables.buff_uptimes }]} durationMs={analysis.data.fight.duration_ms} />
-            <UptimeCard title="Buff & debuff ability uptime" sources={[{ label: 'Buff', value: analysis.data.tables.ability_uptimes }, { label: 'Debuff', value: analysis.data.tables.debuff_uptimes }]} durationMs={analysis.data.fight.duration_ms} />
+            <UptimeCard title="Short debuffs applied during this fight" sources={[{ label: 'Debuff', value: analysis.data.tables.debuff_uptimes }]} durationMs={analysis.data.fight.duration_ms} />
+            <UptimeCard title="Fight ability uptime" sources={[{ label: 'Buff', value: analysis.data.tables.ability_uptimes }]} durationMs={analysis.data.fight.duration_ms} />
             <LeaderCard title="Damage taken · review" players={metricLeaders('damageTaken')} metric="damageTaken" tint="pink" />
           </div>
         </>}
@@ -760,6 +771,35 @@ function tableTotalTime(value: unknown, depth = 0): number | null {
   return null
 }
 
+const LONG_RAID_BUFFS = [
+  { name: 'Arcane Intellect', aliases: ['arcane intellect', 'arcane brilliance'] },
+  { name: 'Power Word: Fortitude', aliases: ['power word: fortitude', 'prayer of fortitude'] },
+  { name: 'Mark of the Wild', aliases: ['mark of the wild', 'gift of the wild'] },
+  { name: 'Blessing of Kings', aliases: ['blessing of kings', 'greater blessing of kings'] },
+  { name: 'Blessing of Might', aliases: ['blessing of might', 'greater blessing of might'] },
+  { name: 'Blessing of Wisdom', aliases: ['blessing of wisdom', 'greater blessing of wisdom'] },
+  { name: 'Blessing of Salvation', aliases: ['blessing of salvation', 'greater blessing of salvation'] },
+  { name: 'Blessing of Sanctuary', aliases: ['blessing of sanctuary', 'greater blessing of sanctuary'] },
+  { name: 'Divine Spirit', aliases: ['divine spirit', 'prayer of spirit'] },
+  { name: 'Shadow Protection', aliases: ['shadow protection', 'prayer of shadow protection'] },
+]
+
+function LongBuffCoverageCard({ players, durationMs }: { players: PlayerStats[]; durationMs: number }) {
+  const families = LONG_RAID_BUFFS.flatMap((family) => {
+    const coverage = players.map((player) => {
+      const uptime = player.uptimes.filter((aura) => family.aliases.some((alias) => aura.name.toLowerCase().includes(alias)))
+        .sort((a, b) => (b.percent ?? -1) - (a.percent ?? -1))[0]
+      const presentAtPull = player.auras.some((name) => family.aliases.some((alias) => name.toLowerCase().includes(alias)))
+      return { player, uptime, presentAtPull }
+    })
+    return coverage.some((item) => item.uptime || item.presentAtPull) ? [{ family, coverage }] : []
+  })
+  return <article className="analysis-card long-buff-coverage"><div className="card-heading"><div><h3>Long-duration class buffs</h3><p>Buffs observed at pull and their uptime across this fight ({(durationMs / 1000).toFixed(0)}s)</p></div><span>{families.length} BUFF TYPES</span></div>
+    {!families.length ? <p className="analysis-empty">No recognized long-duration class buffs were returned for this pull.</p> : <div className="long-buff-grid">{families.map(({ family, coverage }) => { const covered = coverage.filter(({ uptime, presentAtPull }) => (uptime?.percent ?? 0) > 0 || presentAtPull).length; return <section className="long-buff-card" key={family.name}><header><strong>{family.name}</strong><span>{covered} / {coverage.length} seen</span></header><div className="long-buff-players">{coverage.map(({ player, uptime, presentAtPull }) => { const percent = uptime?.percent; const seen = (percent ?? 0) > 0 || presentAtPull; const activeSeconds = percent === null || percent === undefined ? null : durationMs / 1000 * percent / 100; return <div className={`long-buff-player ${seen ? '' : 'buff-missing'}`} key={player.id}><span><b>{player.name}</b><small>{seen ? presentAtPull ? 'Active at pull' : 'Uptime recorded' : 'Not seen in log'}</small></span><i><em style={{ width: `${Math.min(100, percent ?? 0)}%` }} /></i><strong>{percent === null || percent === undefined ? presentAtPull ? 'At pull' : '—' : `${percent.toFixed(0)}%`}</strong><small>{activeSeconds === null ? 'time n/a' : `${activeSeconds.toFixed(0)}s`}</small></div>})}</div></section>})}</div>}
+    <p className="data-note">“Not seen” means no matching uptime or pull-start aura was returned for this player. Confirm class, assignment, and logging coverage before treating it as a missed buff.</p>
+  </article>
+}
+
 function UptimeCard({ title, sources, durationMs }: { title: string; sources: Array<{ label: string; value: unknown }>; durationMs: number }) {
   const rows = sources.flatMap(({ label, value }) => {
     const totalTime = tableTotalTime(value) ?? durationMs
@@ -773,13 +813,16 @@ function UptimeCard({ title, sources, durationMs }: { title: string; sources: Ar
       const source = typeof row.sourceName === 'string' ? row.sourceName : isRecord(row.source) && typeof row.source.name === 'string' ? row.source.name : null
       const armorPerApplication = /sunder armor/i.test(ability) ? 520 : /expose armor/i.test(ability) ? 3075 : /faerie fire/i.test(ability) ? 610 : /curse of recklessness/i.test(ability) ? 800 : 0
       const stacks = /sunder armor/i.test(ability) ? Number(row.stacks ?? row.stackCount ?? 5) : 1
-      return { row, ability, source, percent, label, armorEstimate: armorPerApplication * (Number.isFinite(stacks) ? Math.max(1, stacks) : 1), armorEstimateNote: /sunder armor/i.test(ability) && row.stacks === undefined && row.stackCount === undefined ? ' (5 stacks assumed)' : '' }
+      const applications = numericValue(row, ['totalUses', 'applications', 'uses'])
+      const fightSeconds = durationMs / 1000
+      const activeSeconds = percent === null ? null : fightSeconds * percent / 100
+      return { row, ability, source, percent, label, applications, fightSeconds, activeSeconds, armorEstimate: armorPerApplication * (Number.isFinite(stacks) ? Math.max(1, stacks) : 1), armorEstimateNote: /sunder armor/i.test(ability) && row.stacks === undefined && row.stackCount === undefined ? ' (5 stacks assumed)' : '' }
     })
   }).filter((row) => row.ability !== 'Unknown ability' || row.percent !== null)
   const labels = [...new Set(sources.map((source) => source.label))]
   const ordered = labels.flatMap((label) => [...rows.filter((row) => row.label === label)].sort((a, b) => (b.percent ?? -1) - (a.percent ?? -1)).slice(0, 10))
   return <article className="analysis-card uptime-card"><div className="card-heading"><div><h3>{title}</h3><p>Reported aura presence in this pull</p></div><span>{rows.length ? `${rows.length} ROWS` : 'NO DATA'}</span></div>
-    {!ordered.length ? <p className="analysis-empty">No readable uptime rows were returned for this pull.</p> : <div className="uptime-list">{ordered.map((item, index) => <div className="uptime-row" key={`${item.label}-${item.ability}-${index}`}><div><strong>{item.ability}</strong><small>{item.source ? `${item.label} · provided by ${item.source}` : `${item.label} · provider not identified`}{item.label === 'Debuff' && item.armorEstimate > 0 ? ` · ~${item.armorEstimate.toLocaleString()} armor` : ''}</small></div><span className="uptime-meter"><i style={{ width: `${Math.max(0, Math.min(100, item.percent ?? 0))}%` }} /></span><b>{item.percent === null ? '—' : `${item.percent.toFixed(1)}%`}</b></div>)}</div>}
+    {!ordered.length ? <p className="analysis-empty">No readable uptime rows were returned for this pull.</p> : <div className="uptime-list">{ordered.map((item, index) => <div className="uptime-row" key={`${item.label}-${item.ability}-${index}`}><div><strong>{item.ability}</strong><small>{item.source ? `${item.label} · provided by ${item.source}` : `${item.label} · provider not identified`}{item.activeSeconds === null ? '' : ` · ${item.activeSeconds.toFixed(0)}s / ${item.fightSeconds.toFixed(0)}s`}{item.applications === null ? '' : ` · ${item.applications} applications`}{item.label === 'Debuff' && item.armorEstimate > 0 ? ` · ~${item.armorEstimate.toLocaleString()} armor` : ''}</small></div><span className="uptime-meter"><i style={{ width: `${Math.max(0, Math.min(100, item.percent ?? 0))}%` }} /></span><b>{item.percent === null ? '—' : `${item.percent.toFixed(1)}%`}</b></div>)}</div>}
     <p className="data-note">Percentages use Warcraft Logs total uptime over the reported table time. Debuff uptime shows time present on logged targets; multiple targets can contribute to an ability total. Armor reduction is an estimate based on TBC spell rank (five Sunder Armor stacks assumed when unavailable), not a directly measured boss armor value.</p>
   </article>
 }
