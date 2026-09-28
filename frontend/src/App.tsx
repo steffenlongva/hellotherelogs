@@ -5,6 +5,7 @@ import './local-log.css'
 import './aura-coverage.css'
 import './long-buff.css'
 import './upload-analysis.css'
+import './themes.css'
 import { bossGuideFor, type BossGuide } from './boss-guides'
 import { Activity, ArrowLeft, ArrowUpRight, Check, CircleHelp, Clock3, Command, ExternalLink, LoaderCircle, Shield, Skull, Swords, Trophy } from 'lucide-react'
 
@@ -399,7 +400,7 @@ function formatDate(date: string): string {
 function AppearanceControls() {
   const [theme, setTheme] = useState(() => {
     const saved = localStorage.getItem('htl-theme')
-    return ['dark', 'light', 'catppuccin-mocha', 'tokyo-night', 'nord'].includes(saved ?? '') ? saved as string : 'dark'
+    return ['dark', 'light', 'catppuccin-mocha', 'tokyo-night', 'nord', 'hellothere', 'oiler', 'freedom'].includes(saved ?? '') ? saved as string : 'dark'
   })
   const [fontScale, setFontScale] = useState(() => {
     const stored = Number(localStorage.getItem('htl-font-scale-v2'))
@@ -413,7 +414,7 @@ function AppearanceControls() {
   }, [theme, fontScale])
   return <div className="appearance-controls" aria-label="Display settings">
     <label className="font-scale-control" title="Adjust interface text size"><span>A</span><input aria-label="Text size" type="range" min="0.9" max="1.3" step="0.05" value={fontScale} onChange={(event) => setFontScale(Number(event.target.value))} /><span className="large-a">A</span></label>
-    <label className="theme-picker"><span className="sr-only">Color theme</span><select className="theme-toggle" aria-label="Color theme" value={theme} onChange={(event) => setTheme(event.target.value)}><option value="dark">Dark</option><option value="light">Light</option><option value="catppuccin-mocha">Catppuccin Mocha</option><option value="tokyo-night">Tokyo Night</option><option value="nord">Nord</option></select></label>
+    <label className="theme-picker"><span className="sr-only">Color theme</span><select className="theme-toggle" aria-label="Color theme" value={theme} onChange={(event) => setTheme(event.target.value)}><option value="dark">Dark</option><option value="light">Light</option><option value="catppuccin-mocha">Catppuccin Mocha</option><option value="tokyo-night">Tokyo Night</option><option value="nord">Nord</option><option value="hellothere">Hellothere</option><option value="oiler">Oiler</option><option value="freedom">FREEDOM</option></select></label>
   </div>
 }
 
