@@ -1,6 +1,7 @@
 import { FormEvent, ReactNode, useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import './analysis.css'
+import './local-log.css'
 import { Activity, ArrowLeft, ArrowUpRight, Check, CircleHelp, Clock3, Command, ExternalLink, LoaderCircle, Shield, Skull, Swords, Trophy } from 'lucide-react'
 
 type Health = { status: string; service: string }
@@ -40,6 +41,9 @@ type BenchmarkReference = { report_code: string; fight_id: number; title: string
 type Benchmarks = { status: 'available' | 'empty' | 'unavailable'; encounter: string | null; strictness: string; cohort_source: string; source: string; sample_size: number; match_basis: string[]; limitations: string[]; candidates: BenchmarkCandidate[]; reference_analyses: BenchmarkReference[] }
 type AbilityUptime = { name: string; percent: number | null }
 type SpellUse = { name: string; count: number }
+type LocalDebuff = { spell_id: number; ability: string; target: string; provider: string; uptime_seconds: number; uptime_percent: number; armor_reduction: number; armor_reduction_note?: string }
+type LocalEncounter = { id: string; name: string; kill: boolean | null; duration_seconds: number; debuffs: LocalDebuff[]; armor_reduction: Array<{ ability: string; estimated_armor_reduction: number; uptime_seconds: number; targets: number }> }
+type LocalLog = { file_name: string; encounter_count: number; line_count: number; encounters: LocalEncounter[] }
 type PlayerStats = Actor & { specName: string | null; durationSeconds: number; casts: SpellUse[]; damage: number | null; dps: number | null; healing: number | null; hps: number | null; damageTaken: number | null; friendlyDamage: number | null; friendlyDamageReliable: boolean; friendlyDamageAbilities: Array<{ name: string; amount: number; hits: number }>; deaths: Array<Record<string, unknown>>; interrupts: Array<Record<string, unknown>>; interruptsAvailable: boolean; consumables: string[]; gear: Array<Record<string, unknown>>; averageItemLevel: number | null; enchantCount: number | null; gemCount: number | null; auras: string[]; uptimes: AbilityUptime[]; uptimeAverage: number | null; recentPercentile: number | null; bestPercentile: number | null }
 
 async function getHealth(): Promise<Health> {
@@ -84,6 +88,15 @@ async function fetchBenchmarks(code: string, fightId: number, strictness: string
   const response = await fetch(`/api/reports/${encodeURIComponent(code)}/fights/${fightId}/benchmarks?strictness=${strictness}&source=${source}`)
   const payload = await response.json()
   if (!response.ok) throw new Error(payload.detail ?? 'Could not load comparable logs.')
+  return payload
+}
+
+async function uploadCombatLog(file: File): Promise<LocalLog> {
+  const body = new FormData()
+  body.append('file', file)
+  const response = await fetch('/api/reports/local/analyze', { method: 'POST', body })
+  const payload = await response.json()
+  if (!response.ok) throw new Error(payload.detail ?? 'Could not analyze this combat log.')
   return payload
 }
 
@@ -336,6 +349,10 @@ function HomePage() {
   const [reportUrl, setReportUrl] = useState('')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [sourceTab, setSourceTab] = useState<'wcl' | 'upload'>('wcl')
+  const [localLog, setLocalLog] = useState<LocalLog | null>(null)
+  const [localError, setLocalError] = useState('')
+  const [localLoading, setLocalLoading] = useState(false)
 
   async function analyzeReport(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -359,16 +376,38 @@ function HomePage() {
     </section>
     <section className="connect-panel">
       <div className="panel-heading"><div><span className="step">01</span><h2>Connect a report</h2></div><span className="ready"><Check size={14} /> READY FOR INPUT</span></div>
+      <div className="source-tabs" role="tablist" aria-label="Log source"><button className={sourceTab === 'wcl' ? 'active' : ''} role="tab" aria-selected={sourceTab === 'wcl'} onClick={() => setSourceTab('wcl')}>Warcraft Logs</button><button className={sourceTab === 'upload' ? 'active' : ''} role="tab" aria-selected={sourceTab === 'upload'} onClick={() => setSourceTab('upload')}>Upload combat log</button></div>
+      {sourceTab === 'wcl' ? <>
       <form className="report-form" onSubmit={analyzeReport}>
         <label htmlFor="report-url">REPORT URL</label>
         <div className="input-row"><input id="report-url" type="url" required value={reportUrl} onChange={(event) => setReportUrl(event.target.value)} placeholder="https://fresh.warcraftlogs.com/reports/…" /><button type="submit" disabled={submitting}>{submitting ? <LoaderCircle className="spin" size={15} /> : 'ANALYZE LOG'} {!submitting && <ArrowUpRight size={15} />}</button></div>
         {error && <p className="form-error" role="alert">{error}</p>}
       </form>
-      <div className="panel-foot"><span>Paste a public Fresh report link to begin.</span><span>PRIVATE BY DESIGN</span></div>
+      <div className="panel-foot"><span>Paste a public Fresh report link to begin.</span><span>PRIVATE BY DESIGN</span></div></> : <>
+      <form className="report-form" onSubmit={async (event) => { event.preventDefault(); const file = (event.currentTarget.elements.namedItem('combat-log') as HTMLInputElement).files?.[0]; if (!file) return; setLocalLoading(true); setLocalError(''); setLocalLog(null); try { setLocalLog(await uploadCombatLog(file)) } catch (err) { setLocalError(err instanceof Error ? err.message : 'Could not analyze this combat log.') } finally { setLocalLoading(false) } }}>
+        <label htmlFor="combat-log">WOW ADVANCED COMBAT LOG (.TXT OR .LOG, UP TO 160 MB)</label><div className="input-row"><input id="combat-log" name="combat-log" type="file" accept=".txt,.log,text/plain" required /><button type="submit" disabled={localLoading}>{localLoading ? <LoaderCircle className="spin" size={15} /> : 'ANALYZE FILE'} {!localLoading && <ArrowUpRight size={15} />}</button></div>{localError && <p className="form-error" role="alert">{localError}</p>}
+      </form><div className="panel-foot"><span>Analysis runs locally on this server. The file is not sent to Warcraft Logs.</span><span>UPLOAD</span></div>
+      </>}
     </section>
-    <section className="empty-state"><div className="empty-icon"><Swords size={19} /></div><div><h3>Awaiting encounter data</h3><p>Report overview, boss progression, kills, wipes, and fight durations appear after analysis.</p></div><span className="empty-index">— / —</span></section>
+    {localLog && <LocalLogView log={localLog} />}
+    {!localLog && <section className="empty-state"><div className="empty-icon"><Swords size={19} /></div><div><h3>Awaiting encounter data</h3><p>Report overview, boss progression, kills, wipes, and fight durations appear after analysis.</p></div><span className="empty-index">— / —</span></section>}
     <Footer />
   </main>
+}
+
+function LocalLogView({ log }: { log: LocalLog }) {
+  const [selected, setSelected] = useState(0)
+  const [wclUrl, setWclUrl] = useState('')
+  const encounter = log.encounters[Math.min(selected, log.encounters.length - 1)]
+  return <section className="local-log-panel"><div className="card-heading"><div><h3>Combat log overview</h3><p>{log.file_name} · {log.encounter_count} encounters</p></div><span>{log.line_count.toLocaleString()} LINES</span></div>
+    <label className="local-select-label" htmlFor="encounter-select">ENCOUNTER</label><select id="encounter-select" value={selected} onChange={(event) => setSelected(Number(event.target.value))}>{log.encounters.map((fight, index) => <option key={`${fight.id}-${index}`} value={index}>{fight.name} · {fight.kill ? 'Kill' : fight.kill === false ? 'Wipe' : 'Unknown'}</option>)}</select>
+    {encounter && <><div className="local-statline"><strong>{encounter.name}</strong><span>{Math.floor(encounter.duration_seconds / 60)}:{String(Math.floor(encounter.duration_seconds % 60)).padStart(2, '0')}</span><span>{encounter.kill ? 'KILL' : encounter.kill === false ? 'WIPE' : 'INCOMPLETE'}</span></div>
+      <div className="local-debuff-heading"><h4>Encounter debuffs</h4><span>Measured aura uptime</span></div>
+      {encounter.debuffs.length ? <div className="local-debuff-list">{encounter.debuffs.slice(0, 40).map((row, index) => <div className="local-debuff-row" key={`${row.spell_id}-${row.target}-${row.provider}-${index}`}><div><strong>{row.ability}</strong><small>{row.provider} → {row.target}</small></div><span className="uptime-meter"><i style={{ width: `${Math.min(100, row.uptime_percent)}%` }} /></span><b>{row.uptime_percent}%</b><small>{row.uptime_seconds}s</small></div>)}</div> : <p className="analysis-empty">No encounter debuffs found in this log segment.</p>}
+      <div className="local-debuff-heading"><h4>Estimated armor reduction by ability</h4><span>Spell values are estimates</span></div>{encounter.armor_reduction.length ? <div className="armor-grid">{encounter.armor_reduction.map((item) => <article key={item.ability}><span>{item.ability}</span><strong>{item.estimated_armor_reduction.toLocaleString()} armor</strong><small>{item.uptime_seconds}s applied · {item.targets} targets</small></article>)}</div> : <p className="analysis-empty">No recognized armor-reduction debuffs were recorded.</p>}
+      <details className="local-compare"><summary>Compare with a Warcraft Logs report</summary><form onSubmit={(event) => { event.preventDefault(); const match = wclUrl.match(/\/reports\/([A-Za-z0-9]+)/); if (match) window.open(`/reports/${match[1]}`, '_blank', 'noopener,noreferrer') }}><label htmlFor="local-wcl-url">PUBLIC FRESH REPORT URL</label><div className="input-row"><input id="local-wcl-url" type="url" value={wclUrl} onChange={(event) => setWclUrl(event.target.value)} placeholder="https://fresh.warcraftlogs.com/reports/…" required /><button type="submit">OPEN COMPARISON <ExternalLink size={14} /></button></div></form><small>Opens the WCL analysis in a second tab so you can compare encounter and debuff views side by side.</small></details>
+    </>}
+  </section>
 }
 
 function ReportPage({ code }: { code: string }) {
@@ -525,19 +564,23 @@ function BenchmarkCard({ benchmarks, analysis, players, isLoading, error, strict
       ...(dps && player.dps !== null && player.dps < dps.lowerQuartile ? [`DPS is below the reference lower quartile (${formatMetric(player.dps)} vs ${formatMetric(dps.lowerQuartile)}). Review cast choices, active time, and assignment context.`] : []),
       ...(hps && player.hps !== null && player.hps < hps.lowerQuartile ? [`HPS is below the reference lower quartile (${formatMetric(player.hps)} vs ${formatMetric(hps.lowerQuartile)}). Review healing assignments, casts, and encounter timing.`] : []),
     ] : []
-    const castFindings = player.casts.flatMap((spell) => {
+    const referenceAbilities = new Set(peerGroups.flatMap((group) => group.players.flatMap((peer) => peer.casts.map((spell) => spell.name))))
+    const castTableAvailable = tableRows(analysis?.tables.casts).length > 0
+    const castFindings = [...referenceAbilities].flatMap((abilityName) => {
       const samples = peerGroups.flatMap((group) => {
+        if (tableRows(group.reference.tables.casts).length === 0) return []
         const rates = group.players.flatMap((peer) => peer.durationSeconds > 0
-          ? peer.casts.filter((item) => item.name === spell.name).map((item) => item.count / peer.durationSeconds * 60)
+          ? [(peer.casts.find((item) => item.name === abilityName)?.count ?? 0) / peer.durationSeconds * 60]
           : [])
         const rate = mean(rates)
         return rate === null ? [] : [rate]
       })
       const baseline = distribution(samples)
       const logs = samples.length
-      const currentRate = player.durationSeconds > 0 ? spell.count / player.durationSeconds * 60 : null
+      const currentCasts = player.casts.find((spell) => spell.name === abilityName)?.count ?? 0
+      const currentRate = player.durationSeconds > 0 && castTableAvailable ? currentCasts / player.durationSeconds * 60 : null
       return baseline && currentRate !== null && logs >= 3 && baseline.lowerQuartile > 0 && currentRate < baseline.lowerQuartile * 0.8
-        ? [{ name: spell.name, current: currentRate, baseline: baseline.median, logs }]
+        ? [{ name: abilityName, current: currentRate, baseline: baseline.median, logs, missing: currentCasts === 0 }]
         : []
     }).slice(0, 3)
     const uptimeFindings = player.uptimes.flatMap((ability) => {
@@ -580,7 +623,7 @@ function BenchmarkCard({ benchmarks, analysis, players, isLoading, error, strict
       {references.length > 0 && <>
         <section className="benchmark-summary"><div className="card-heading"><div><h4>Raid output vs matched reference logs</h4><p>Per-second totals compared with the median of the selected cohort.</p></div><span>{references.length} LOGS</span></div><div className="benchmark-metrics"><div><span>Raid DPS</span><strong>{formatMetric(selectedRaidDps)}</strong><small>reference median {raidDamage ? formatMetric(raidDamage.median) : '—'}{raidDamage ? ` · ${raidDamage.count} logs${versusMedian(selectedRaidDps, raidDamage)}` : ''}</small></div><div><span>Raid HPS</span><strong>{formatMetric(selectedRaidHps)}</strong><small>reference median {raidHealing ? formatMetric(raidHealing.median) : '—'}{raidHealing ? ` · ${raidHealing.count} logs${versusMedian(selectedRaidHps, raidHealing)}` : ''}</small></div><div><span>Damage taken / sec</span><strong>{formatMetric(selectedTakenRate)}</strong><small>reference median {raidTakenRate ? formatMetric(raidTakenRate.median) : '—'}{raidTakenRate ? ` · ${raidTakenRate.count} logs` : ''}</small></div><div><span>Deaths</span><strong>{deaths === null ? '—' : deaths}</strong><small>reference median {deathMedian ? `${deathMedian.median.toFixed(1)} · n=${deathMedian.count}` : '—'}</small></div><div><span>Interrupts landed</span><strong>{interrupts === null ? '—' : interrupts}</strong><small>reference median {interruptMedian ? `${interruptMedian.median.toFixed(1)} · n=${interruptMedian.count}` : '—'}</small></div></div></section>
         {raidReviewPrompts.length > 0 && <aside className="benchmark-highlights"><strong>Differences to review</strong><ul>{raidReviewPrompts.map((prompt) => <li key={prompt}>{prompt}</li>)}</ul><small>Prompts appear only when at least three reference kills are available. They point to evidence for review and do not assign fault.</small></aside>}
-        <details className="benchmark-player-comparison"><summary>Compare players with {players.some((player) => player.specName) ? 'matching specializations where available' : 'the same class'} across reference logs</summary><div className="analysis-table-wrap"><table><thead><tr><th>Player</th><th>Peer group</th><th>Pull DPS</th><th>Ref. median</th><th>Peer logs</th><th>Pull HPS</th><th>Ref. median</th><th>Taken/s</th><th>Ref. median</th><th>Review prompt</th></tr></thead><tbody>{playerComparisons.map(({ player, peerLogCount, classFallbackLogCount, dps, hps, damageTaken, metricFindings, uptimeFindings, castFindings }) => { const prompts = [...metricFindings, ...uptimeFindings.map((finding) => `${finding.name} uptime: ${finding.current.toFixed(0)}% vs ${finding.baseline.toFixed(0)}% reference median across ${finding.logs} logs.`), ...castFindings.map((finding) => `${finding.name}: ${finding.current.toFixed(1)} casts/min vs ${finding.baseline.toFixed(1)} median across ${finding.logs} logs; confirm the spell was expected in this role and fight phase.`)]; return <tr key={player.id}><td>{player.name}</td><td>{player.specName ? `${player.subType} · ${player.specName}${classFallbackLogCount ? ` (${classFallbackLogCount} class fallback)` : ''}` : `${player.subType} · class fallback`}</td><td>{formatMetric(player.dps)}</td><td>{dps ? formatMetric(dps.median) : '—'}</td><td>{peerLogCount}</td><td>{formatMetric(player.hps)}</td><td>{hps ? formatMetric(hps.median) : '—'}</td><td>{player.damageTaken === null ? '—' : formatMetric(player.damageTaken / Math.max(.001, player.durationSeconds))}</td><td>{damageTaken ? formatMetric(damageTaken.median) : '—'}</td><td>{prompts.length ? prompts.join(' ') : peerLogCount < 3 ? `Need more ${player.specName ? 'same-specialization' : 'same-class'} reference logs` : 'No clear gap in the available fields'}</td></tr> })}</tbody></table></div><p className="benchmark-caveat">Taken damage is shown as context, not avoidability. Uses same specialization when WCL returns it, otherwise falls back to same class and labels that fallback. {source === 'recent' ? 'Recent references come from this roster’s two-week character parses.' : 'Comparisons use execution-ranked kills.'} Cast-rate prompts only flag low use in this sample; confirm cooldown availability, role, assignments, mechanics, and kill strategy before drawing conclusions.</p></details>
+        <details className="benchmark-player-comparison"><summary>Compare players with {players.some((player) => player.specName) ? 'matching specializations where available' : 'the same class'} across reference logs</summary><div className="analysis-table-wrap"><table><thead><tr><th>Player</th><th>Peer group</th><th>Pull DPS</th><th>Ref. median</th><th>Peer logs</th><th>Pull HPS</th><th>Ref. median</th><th>Taken/s</th><th>Ref. median</th><th>Review prompt</th></tr></thead><tbody>{playerComparisons.map(({ player, peerLogCount, classFallbackLogCount, dps, hps, damageTaken, metricFindings, uptimeFindings, castFindings }) => { const prompts = [...metricFindings, ...uptimeFindings.map((finding) => `${finding.name} uptime: ${finding.current.toFixed(0)}% vs ${finding.baseline.toFixed(0)}% reference median across ${finding.logs} logs.`), ...castFindings.map((finding) => finding.missing ? `No logged casts of ${finding.name}; matched peers averaged ${finding.baseline.toFixed(1)} casts/min across ${finding.logs} logs. Verify it was available and assigned in this pull.` : `${finding.name}: ${finding.current.toFixed(1)} casts/min vs ${finding.baseline.toFixed(1)} median across ${finding.logs} logs; confirm the spell was expected in this role and fight phase.`)]; return <tr key={player.id}><td>{player.name}</td><td>{player.specName ? `${player.subType} · ${player.specName}${classFallbackLogCount ? ` (${classFallbackLogCount} class fallback)` : ''}` : `${player.subType} · class fallback`}</td><td>{formatMetric(player.dps)}</td><td>{dps ? formatMetric(dps.median) : '—'}</td><td>{peerLogCount}</td><td>{formatMetric(player.hps)}</td><td>{hps ? formatMetric(hps.median) : '—'}</td><td>{player.damageTaken === null ? '—' : formatMetric(player.damageTaken / Math.max(.001, player.durationSeconds))}</td><td>{damageTaken ? formatMetric(damageTaken.median) : '—'}</td><td>{prompts.length ? prompts.join(' ') : peerLogCount < 3 ? `Need more ${player.specName ? 'same-specialization' : 'same-class'} reference logs` : 'No clear gap in the available fields'}</td></tr> })}</tbody></table></div><p className="benchmark-caveat">Taken damage is shown as context, not avoidability. Uses same specialization when WCL returns it, otherwise falls back to same class and labels that fallback. {source === 'recent' ? 'Recent references come from this roster’s two-week character parses.' : source === 'progression' ? 'Progression references come from the same report and match the pull’s kill/wipe result.' : 'Comparisons use execution-ranked kills.'} Cast-rate prompts only flag low use in this sample; confirm cooldown availability, role, assignments, mechanics, and kill strategy before drawing conclusions.</p></details>
       </>}
       <details className="benchmark-notes"><summary>How these logs were matched</summary><p>{benchmarks.match_basis.length ? benchmarks.match_basis.join(' · ') : 'The report is missing fields needed to select a cohort.'}</p>{benchmarks.limitations.map((limitation) => <p key={limitation}>{limitation}</p>)}</details>
     </>}
@@ -720,14 +763,16 @@ function UptimeCard({ title, sources, durationMs }: { title: string; sources: Ar
       if (percent !== null && percent > 100) percent = null
       const ability = isRecord(row.ability) ? String(row.ability.name ?? row.name ?? 'Unknown ability') : String(row.name ?? 'Unknown ability')
       const source = typeof row.sourceName === 'string' ? row.sourceName : isRecord(row.source) && typeof row.source.name === 'string' ? row.source.name : null
-      return { row, ability, source, percent, label }
+      const armorPerApplication = /sunder armor/i.test(ability) ? 520 : /expose armor/i.test(ability) ? 3075 : /faerie fire/i.test(ability) ? 610 : /curse of recklessness/i.test(ability) ? 800 : 0
+      const stacks = /sunder armor/i.test(ability) ? Number(row.stacks ?? row.stackCount ?? 5) : 1
+      return { row, ability, source, percent, label, armorEstimate: armorPerApplication * (Number.isFinite(stacks) ? Math.max(1, stacks) : 1), armorEstimateNote: /sunder armor/i.test(ability) && row.stacks === undefined && row.stackCount === undefined ? ' (5 stacks assumed)' : '' }
     })
   }).filter((row) => row.ability !== 'Unknown ability' || row.percent !== null)
   const labels = [...new Set(sources.map((source) => source.label))]
   const ordered = labels.flatMap((label) => [...rows.filter((row) => row.label === label)].sort((a, b) => (b.percent ?? -1) - (a.percent ?? -1)).slice(0, 10))
   return <article className="analysis-card uptime-card"><div className="card-heading"><div><h3>{title}</h3><p>Reported aura presence in this pull</p></div><span>{rows.length ? `${rows.length} ROWS` : 'NO DATA'}</span></div>
-    {!ordered.length ? <p className="analysis-empty">No readable uptime rows were returned for this pull.</p> : <div className="uptime-list">{ordered.map((item, index) => <div className="uptime-row" key={`${item.label}-${item.ability}-${index}`}><div><strong>{item.ability}</strong><small>{item.source ? `${item.label} · provided by ${item.source}` : `${item.label} · provider not identified`}</small></div><span className="uptime-meter"><i style={{ width: `${Math.max(0, Math.min(100, item.percent ?? 0))}%` }} /></span><b>{item.percent === null ? '—' : `${item.percent.toFixed(1)}%`}</b></div>)}</div>}
-    <p className="data-note">Percentages use Warcraft Logs total uptime over the reported table time. Debuff uptime shows time present on logged targets; multiple targets can contribute to an ability total.</p>
+    {!ordered.length ? <p className="analysis-empty">No readable uptime rows were returned for this pull.</p> : <div className="uptime-list">{ordered.map((item, index) => <div className="uptime-row" key={`${item.label}-${item.ability}-${index}`}><div><strong>{item.ability}</strong><small>{item.source ? `${item.label} · provided by ${item.source}` : `${item.label} · provider not identified`}{item.label === 'Debuff' && item.armorEstimate > 0 ? ` · ~${item.armorEstimate.toLocaleString()} armor` : ''}</small></div><span className="uptime-meter"><i style={{ width: `${Math.max(0, Math.min(100, item.percent ?? 0))}%` }} /></span><b>{item.percent === null ? '—' : `${item.percent.toFixed(1)}%`}</b></div>)}</div>}
+    <p className="data-note">Percentages use Warcraft Logs total uptime over the reported table time. Debuff uptime shows time present on logged targets; multiple targets can contribute to an ability total. Armor reduction is an estimate based on TBC spell rank (five Sunder Armor stacks assumed when unavailable), not a directly measured boss armor value.</p>
   </article>
 }
 
