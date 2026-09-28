@@ -29,11 +29,39 @@ def test_analyze_compressed_combat_log_tracks_debuff_provider_uptime_and_armor()
             "provider": "Rogue",
             "uptime_seconds": 10.0,
             "uptime_percent": 33.3,
+            "fight_duration_seconds": 30.0,
+            "applications": 1,
             "armor_reduction": 3075,
             "armor_reduction_note": "estimated from the TBC spell rank",
         }
     ]
     assert encounter["armor_reduction"][0]["estimated_armor_reduction"] == 3075
+
+
+def test_long_buff_coverage_uses_pull_state_and_full_fight_duration() -> None:
+    mage = 'Player-Mage,"Mage",0x514,0x0'
+    rogue = 'Player-Rogue,"Rogue",0x511,0x0'
+    other = 'Player-Other,"Other",0x514,0x0'
+    boss = 'Creature-Boss,"Archimonde",0xa48,0x0'
+    content = "\n".join(
+        [
+            f"9/24/2026 19:59:50.0000  SPELL_AURA_APPLIED,{mage},{rogue},1459,\"Arcane Intellect\",0x40,BUFF",
+            f"9/24/2026 19:59:55.0000  SWING_DAMAGE,{other},{boss},1,1,0,0,0,0,0,0,0,0,0,0,0",
+            "9/24/2026 20:00:00.0000  ENCOUNTER_START,622,\"Archimonde\",4,25",
+            f"9/24/2026 20:00:04.0000  SWING_DAMAGE,{mage},{boss},1,1,0,0,0,0,0,0,0,0,0,0,0",
+            f"9/24/2026 20:00:05.0000  SWING_DAMAGE,{rogue},{boss},1,1,0,0,0,0,0,0,0,0,0,0,0",
+            "9/24/2026 20:00:10.0000  ENCOUNTER_END,622,\"Archimonde\",4,25,1",
+        ]
+    ).encode()
+
+    encounter = analyze_combat_log(content)["encounters"][0]
+    buff = encounter["long_buffs"][0]
+    assert buff["ability"] == "Arcane Intellect"
+    assert buff["covered_players"] == 1
+    assert [(player["name"], player["uptime_percent"], player["status"]) for player in buff["players"]] == [
+        ("Mage", 0.0, "Not seen"),
+        ("Rogue", 100.0, "On at pull"),
+    ]
 
 
 def test_decompress_combat_log_rejects_invalid_gzip() -> None:
