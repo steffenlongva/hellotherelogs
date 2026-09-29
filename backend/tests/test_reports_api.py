@@ -63,6 +63,42 @@ def test_invalid_report_url_returns_422(tmp_path) -> None:
     assert response.status_code == 422
 
 
+def test_live_refresh_updates_shared_cache_and_changed_analysis(tmp_path) -> None:
+    payload = fresh_report()
+    counts: dict[str, int] = {}
+    app = create_app(make_settings(tmp_path / "live.sqlite3"), http_transport=api_transport(payload, counts=counts))
+    with TestClient(app) as client:
+        original = client.get("/api/reports/AbC123").json()
+        cache = app.state.report_service.cache
+        cache.set("analysis:v7:AbC123:1", {"old": True})
+        cache.set("analysis:v7:AbC123:2", {"unchanged": True})
+        payload["fights"][0]["endTime"] += 1000
+        payload["fights"].append({**payload["fights"][1], "id": 4})
+        assert client.get("/api/reports/AbC123").json() == original
+        refreshed = client.get("/api/reports/AbC123?refresh=true")
+        assert refreshed.status_code == 200
+        assert refreshed.json()["fight_count"] == 4
+        assert cache.get("analysis:v7:AbC123:1") is None
+        assert cache.get("analysis:v7:AbC123:2") == {"unchanged": True}
+        assert client.get("/api/reports/AbC123").json() == refreshed.json()
+        assert len(client.get("/api/reports/AbC123/fights").json()) == 4
+        assert counts["graphql"] == 2
+
+
+def test_failed_live_refresh_preserves_cached_report(tmp_path) -> None:
+    payload = fresh_report()
+    app = create_app(make_settings(tmp_path / "live-error.sqlite3"), http_transport=api_transport(payload))
+    with TestClient(app) as client:
+        original = client.get("/api/reports/AbC123").json()
+        app.state.report_service.client.query = failing_query
+        assert client.get("/api/reports/AbC123?refresh=true").status_code == 502
+        assert client.get("/api/reports/AbC123").json() == original
+
+
+async def failing_query(*args: object, **kwargs: object) -> dict:
+    raise httpx.ConnectError("upstream unavailable")
+
+
 def test_graphql_errors_map_to_bad_gateway(tmp_path) -> None:
     app = create_app(
         make_settings(tmp_path / "api-error.sqlite3"),

@@ -68,10 +68,11 @@ async def analyze_local_log(file: UploadFile = File(...)) -> dict[str, Any]:
 @router.get("/{report_code}")
 async def get_report(
     report_code: str = REPORT_CODE_PATH,
+    refresh: bool = Query(default=False),
     service: ReportService = Depends(get_report_service),
 ) -> dict[str, Any]:
     try:
-        return await service.get_report(report_code)
+        return await service.get_report(report_code, refresh=refresh)
     except Exception as exc:
         logger.exception("Report request failed for %s", report_code)
         _raise_api_error(exc)
