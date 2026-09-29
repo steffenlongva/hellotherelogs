@@ -1,5 +1,5 @@
 import { FormEvent, ReactNode, useEffect, useMemo, useState } from 'react'
-import { keepPreviousData, useQuery } from '@tanstack/react-query'
+import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
 import './analysis.css'
 import './local-log.css'
 import './aura-coverage.css'
@@ -8,6 +8,7 @@ import './upload-analysis.css'
 import './debuff-applications.css'
 import './themes.css'
 import './live-updates.css'
+import { changeLiveInterval, defaultSessionMinutes, isLiveSessionActive, readLiveSession, refreshIntervals, sessionDurations, startLiveSession } from './live-session'
 import { bossGuideFor, type BossGuide } from './boss-guides'
 import { Activity, ArrowLeft, ArrowUpRight, Check, CircleHelp, Clock3, Command, ExternalLink, LoaderCircle, Shield, Skull, Swords, Trophy } from 'lucide-react'
 
@@ -455,12 +456,16 @@ function Header({ connected }: { connected?: boolean }) {
   </header>
 }
 
-const refreshIntervals = [30, 60, 120, 300]
-
 function RefreshInterval({ value, onChange, allowOff = false }: { value: number; onChange: (value: number) => void; allowOff?: boolean }) {
   return <label className="live-interval">Refresh every <select className="theme-toggle" value={value} onChange={(event) => onChange(Number(event.target.value))}>
     {allowOff && <option value={0}>Off</option>}
     {refreshIntervals.map((seconds) => <option key={seconds} value={seconds}>{seconds < 60 ? `${seconds} seconds` : `${seconds / 60} minute${seconds > 60 ? 's' : ''}`}</option>)}
+  </select></label>
+}
+
+function SessionDuration({ value, onChange }: { value: number; onChange: (value: number) => void }) {
+  return <label className="live-interval">Stop after <select className="theme-toggle" value={value} onChange={(event) => onChange(Number(event.target.value))}>
+    {sessionDurations.map((minutes) => <option key={minutes} value={minutes}>{minutes < 60 ? `${minutes} minutes` : `${minutes / 60} hour${minutes > 60 ? 's' : ''}`}</option>)}
   </select></label>
 }
 
@@ -471,6 +476,7 @@ function HomePage() {
   const [submitting, setSubmitting] = useState(false)
   const [sourceTab, setSourceTab] = useState<'wcl' | 'upload' | 'live'>('wcl')
   const [refreshSeconds, setRefreshSeconds] = useState(60)
+  const [sessionMinutes, setSessionMinutes] = useState(defaultSessionMinutes)
   const [localLog, setLocalLog] = useState<LocalLog | null>(null)
   const [localError, setLocalError] = useState('')
   const [localLoading, setLocalLoading] = useState(false)
@@ -490,7 +496,7 @@ function HomePage() {
     setError('')
     try {
       const { report_code } = await parseReportURL(reportUrl)
-      window.location.assign(`/reports/${encodeURIComponent(report_code)}${sourceTab === 'live' ? `?refresh=${refreshSeconds}` : ''}`)
+      window.location.assign(`/reports/${encodeURIComponent(report_code)}${sourceTab === 'live' ? `?refresh=${refreshSeconds}&until=${startLiveSession(refreshSeconds, sessionMinutes).endsAt}` : ''}`)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not read that report URL.')
     } finally {
@@ -512,7 +518,7 @@ function HomePage() {
       <form className="report-form" onSubmit={analyzeReport}>
         <label htmlFor="report-url">REPORT URL</label>
         <div className="input-row"><input id="report-url" type="url" required value={reportUrl} onChange={(event) => setReportUrl(event.target.value)} placeholder="https://fresh.warcraftlogs.com/reports/…" /><button type="submit" disabled={submitting}>{submitting ? <LoaderCircle className="spin" size={15} /> : 'ANALYZE LOG'} {!submitting && <ArrowUpRight size={15} />}</button></div>
-        {sourceTab === 'live' && <div className="live-settings"><RefreshInterval value={refreshSeconds} onChange={setRefreshSeconds} /><p>Check an ongoing public report for new pulls as they reach Warcraft Logs. Keep this tab open; checks pause while it is in the background.</p></div>}
+        {sourceTab === 'live' && <div className="live-settings"><RefreshInterval value={refreshSeconds} onChange={setRefreshSeconds} /><SessionDuration value={sessionMinutes} onChange={setSessionMinutes} /><p>Check for new pulls until the selected time limit, then stop automatically. Checks pause in background tabs; time away still counts toward the limit.</p></div>}
         {error && <p className="form-error" role="alert">{error}</p>}
       </form>
       <div className="panel-foot"><span>Paste a public Fresh report link to begin.</span><span>PRIVATE BY DESIGN</span></div></> : <>
@@ -574,18 +580,52 @@ function LocalDebuffBucket({ title, rows, duration }: { title: string; rows: Loc
 }
 
 function ReportPage({ code }: { code: string }) {
-  const [refreshSeconds, setRefreshSeconds] = useState(() => {
-    const seconds = Number(new URLSearchParams(window.location.search).get('refresh'))
-    return refreshIntervals.includes(seconds) ? seconds : 0
-  })
-  const live = refreshSeconds > 0
+  const queryClient = useQueryClient()
+  const [session, setSession] = useState(() => readLiveSession(window.location.search))
+  const [sessionMinutes, setSessionMinutes] = useState(defaultSessionMinutes)
+  const [, updateClock] = useState(0)
+  const live = session.endsAt > 0
+  const active = isLiveSessionActive(session)
   useEffect(() => {
     const url = new URL(window.location.href)
-    if (refreshSeconds) url.searchParams.set('refresh', String(refreshSeconds))
-    else url.searchParams.delete('refresh')
+    if (session.refreshSeconds) {
+      url.searchParams.set('refresh', String(session.refreshSeconds))
+      url.searchParams.set('until', String(session.endsAt))
+    } else {
+      url.searchParams.delete('refresh')
+      url.searchParams.delete('until')
+    }
     window.history.replaceState(window.history.state, '', url)
-  }, [refreshSeconds])
-  const report = useQuery({ queryKey: ['report', code, live], queryFn: () => fetchReport(code, live), retry: 1, placeholderData: keepPreviousData, refetchInterval: live ? refreshSeconds * 1000 : false, refetchIntervalInBackground: false })
+  }, [session])
+  useEffect(() => {
+    if (!session.refreshSeconds) return
+    const checkDeadline = () => updateClock((value) => value + 1)
+    const timer = window.setTimeout(checkDeadline, Math.max(0, session.endsAt - Date.now()))
+    window.addEventListener('pageshow', checkDeadline)
+    document.addEventListener('visibilitychange', checkDeadline)
+    return () => {
+      window.clearTimeout(timer)
+      window.removeEventListener('pageshow', checkDeadline)
+      document.removeEventListener('visibilitychange', checkDeadline)
+    }
+  }, [session])
+  const reportKey = ['report', code, session.endsAt]
+  const report = useQuery({
+    queryKey: reportKey,
+    queryFn: () => {
+      // Check wall-clock time at request execution, including delayed retries/wakeups.
+      if (live && !isLiveSessionActive(session)) {
+        return queryClient.getQueryData<Report>(reportKey) ?? fetchReport(code)
+      }
+      return fetchReport(code, live)
+    },
+    retry: (failureCount) => failureCount < 1 && (!live || isLiveSessionActive(session)),
+    placeholderData: keepPreviousData,
+    refetchInterval: () => isLiveSessionActive(session) ? session.refreshSeconds * 1000 : false,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: !live,
+    refetchOnReconnect: !live,
+  })
   const fightsQuery = useQuery({ queryKey: ['report-fights', code], queryFn: () => fetchFights(code), enabled: report.isSuccess && !live, retry: 1 })
   const fights = live ? { ...fightsQuery, data: report.data?.fights, isLoading: report.isLoading } : fightsQuery
   const [selectedFightId, setSelectedFightId] = useState<number | null>(null)
@@ -593,9 +633,9 @@ function ReportPage({ code }: { code: string }) {
   const [benchmarkSource, setBenchmarkSource] = useState('recent')
   const analysisFightId = selectedFightId ?? report.data?.fights.find((fight) => fight.encounter_id > 0)?.fight_id ?? null
   const selectedFight = report.data?.fights.find((fight) => fight.fight_id === analysisFightId)
-  const analysis = useQuery({ queryKey: ['fight-analysis', code, analysisFightId, selectedFight], queryFn: () => fetchFightAnalysis(code, analysisFightId as number), enabled: analysisFightId !== null, retry: 1 })
+  const analysis = useQuery({ queryKey: ['fight-analysis', code, analysisFightId, selectedFight], queryFn: () => fetchFightAnalysis(code, analysisFightId as number), enabled: analysisFightId !== null, retry: 1, refetchOnWindowFocus: !live, refetchOnReconnect: !live })
   const effectiveBenchmarkSource = analysis.data?.fight.kill === false ? 'progression' : benchmarkSource
-  const benchmarks = useQuery({ queryKey: ['fight-benchmarks', code, analysisFightId, benchmarkStrictness, effectiveBenchmarkSource], queryFn: () => fetchBenchmarks(code, analysisFightId as number, benchmarkStrictness, effectiveBenchmarkSource), enabled: analysisFightId !== null, retry: 1 })
+  const benchmarks = useQuery({ queryKey: ['fight-benchmarks', code, analysisFightId, benchmarkStrictness, effectiveBenchmarkSource], queryFn: () => fetchBenchmarks(code, analysisFightId as number, benchmarkStrictness, effectiveBenchmarkSource), enabled: analysisFightId !== null, retry: 1, refetchOnWindowFocus: !live, refetchOnReconnect: !live })
   const playerStats = useMemo(() => analysis.data ? makePlayerStats(analysis.data) : [], [analysis.data])
   const encounterActors = analysis.data ? [...analysis.data.actors, ...(analysis.data.enemy_actors ?? [])] : []
   const deathEvents = analysis.data ? tableRows(analysis.data.events.deaths) : []
@@ -611,10 +651,12 @@ function ReportPage({ code }: { code: string }) {
     <Header connected />
     <div className="report-back"><a href="/"><ArrowLeft size={14} /> ALL REPORTS</a><a href={`https://fresh.warcraftlogs.com/reports/${encodeURIComponent(code)}`} target="_blank" rel="noreferrer">OPEN IN WARCRAFT LOGS <ExternalLink size={13} /></a></div>
     <section className="live-settings" aria-label="Report updates">
-      <RefreshInterval value={refreshSeconds} onChange={setRefreshSeconds} allowOff />
+      <RefreshInterval value={active ? session.refreshSeconds : 0} onChange={(seconds) => setSession((current) => changeLiveInterval(current, seconds, sessionMinutes))} allowOff />
+      {!active && <SessionDuration value={sessionMinutes} onChange={setSessionMinutes} />}
       <span role="status">{report.isFetching ? 'Checking Warcraft Logs…' : report.dataUpdatedAt ? `Last loaded ${new Date(report.dataUpdatedAt).toLocaleTimeString()}` : 'Waiting for report'}</span>
-      {live && <p>Checks for new pulls while this tab is active. Your selected pull stays selected. Updates depend on the report uploader.</p>}
-      {report.isError && report.data && <p role="alert">Update failed. Showing the last loaded report. {live ? 'Will retry at the selected interval.' : ''}</p>}
+      {active && <p>Stops automatically at {new Date(session.endsAt).toLocaleTimeString()}. Background time counts toward this limit. Change to Off to stop sooner.</p>}
+      {live && !active && <p role="status">Live updates stopped. Choose a refresh interval to start a new timed session.</p>}
+      {report.isError && report.data && <p role="alert">Update failed. Showing the last loaded report. {active ? 'Will retry at the selected interval until the session ends.' : ''}</p>}
     </section>
     {report.isLoading && <section className="loading-panel"><LoaderCircle className="spin" size={18} /> FETCHING REPORT FROM FRESH WARCRAFT LOGS</section>}
     {report.isError && !report.data && <section className="error-panel"><CircleHelp size={18} /><div><h2>Report could not be loaded</h2><p>{report.error.message}</p><a href="/">Try another report <ArrowUpRight size={13} /></a></div></section>}
