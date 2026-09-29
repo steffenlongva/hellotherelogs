@@ -381,13 +381,18 @@ class ReportService:
             raise ReportNotFoundError("Report was not found or is not publicly accessible.")
         return report
 
-    async def get_report(self, code: str) -> dict[str, Any]:
+    async def get_report(self, code: str, refresh: bool = False) -> dict[str, Any]:
         cache_key = f"report:v3:{code}"
         cached = self.cache.get(cache_key)
-        if cached is not None:
+        if cached is not None and not refresh:
             return cached
         data = await self.client.query(REPORT_QUERY, {"code": code})
         normalized = normalize_report(self._report_from_response(data))
+        if refresh:
+            previous_fights = {fight["fight_id"]: fight for fight in (cached or {}).get("fights", [])}
+            for fight in normalized["fights"]:
+                if previous_fights.get(fight["fight_id"]) != fight:
+                    self.cache.delete(f"analysis:v7:{code}:{fight['fight_id']}")
         self.cache.set(cache_key, normalized)
         self.cache.set(f"fights:v3:{code}", normalized["fights"])
         return normalized

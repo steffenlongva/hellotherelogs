@@ -33,3 +33,9 @@ class SQLiteCache:
             else:
                 entry.payload = payload
                 entry.expires_at = time.time() + self.ttl_seconds
+
+    def delete(self, key: str) -> None:
+        with self.sessions.begin() as session:
+            entry = session.get(CacheEntry, key)
+            if entry is not None:
+                session.delete(entry)

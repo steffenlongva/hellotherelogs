@@ -1,5 +1,5 @@
 import { FormEvent, ReactNode, useEffect, useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import './analysis.css'
 import './local-log.css'
 import './aura-coverage.css'
@@ -7,6 +7,7 @@ import './long-buff.css'
 import './upload-analysis.css'
 import './debuff-applications.css'
 import './themes.css'
+import './live-updates.css'
 import { bossGuideFor, type BossGuide } from './boss-guides'
 import { Activity, ArrowLeft, ArrowUpRight, Check, CircleHelp, Clock3, Command, ExternalLink, LoaderCircle, Shield, Skull, Swords, Trophy } from 'lucide-react'
 
@@ -74,8 +75,8 @@ async function parseReportURL(reportUrl: string): Promise<{ report_code: string 
   return payload
 }
 
-async function fetchReport(code: string): Promise<Report> {
-  const response = await fetch(`/api/reports/${encodeURIComponent(code)}`)
+async function fetchReport(code: string, refresh = false): Promise<Report> {
+  const response = await fetch(`/api/reports/${encodeURIComponent(code)}${refresh ? '?refresh=true' : ''}`, { cache: refresh ? 'no-store' : 'default' })
   const payload = await response.json()
   if (!response.ok) throw new Error(payload.detail ?? 'Could not load this report.')
   return payload
@@ -454,12 +455,22 @@ function Header({ connected }: { connected?: boolean }) {
   </header>
 }
 
+const refreshIntervals = [30, 60, 120, 300]
+
+function RefreshInterval({ value, onChange, allowOff = false }: { value: number; onChange: (value: number) => void; allowOff?: boolean }) {
+  return <label className="live-interval">Refresh every <select className="theme-toggle" value={value} onChange={(event) => onChange(Number(event.target.value))}>
+    {allowOff && <option value={0}>Off</option>}
+    {refreshIntervals.map((seconds) => <option key={seconds} value={seconds}>{seconds < 60 ? `${seconds} seconds` : `${seconds / 60} minute${seconds > 60 ? 's' : ''}`}</option>)}
+  </select></label>
+}
+
 function HomePage() {
   const health = useQuery({ queryKey: ['health'], queryFn: getHealth, retry: 1 })
   const [reportUrl, setReportUrl] = useState('')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
-  const [sourceTab, setSourceTab] = useState<'wcl' | 'upload'>('wcl')
+  const [sourceTab, setSourceTab] = useState<'wcl' | 'upload' | 'live'>('wcl')
+  const [refreshSeconds, setRefreshSeconds] = useState(60)
   const [localLog, setLocalLog] = useState<LocalLog | null>(null)
   const [localError, setLocalError] = useState('')
   const [localLoading, setLocalLoading] = useState(false)
@@ -479,7 +490,7 @@ function HomePage() {
     setError('')
     try {
       const { report_code } = await parseReportURL(reportUrl)
-      window.location.assign(`/reports/${encodeURIComponent(report_code)}`)
+      window.location.assign(`/reports/${encodeURIComponent(report_code)}${sourceTab === 'live' ? `?refresh=${refreshSeconds}` : ''}`)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not read that report URL.')
     } finally {
@@ -496,11 +507,12 @@ function HomePage() {
     </section>
     <section className="connect-panel">
       <div className="panel-heading"><div><span className="step">01</span><h2>Connect a report</h2></div><span className="ready"><Check size={14} /> READY FOR INPUT</span></div>
-      <div className="source-tabs" role="tablist" aria-label="Log source"><button className={sourceTab === 'wcl' ? 'active' : ''} role="tab" aria-selected={sourceTab === 'wcl'} onClick={() => setSourceTab('wcl')}>Warcraft Logs</button><button className={sourceTab === 'upload' ? 'active' : ''} role="tab" aria-selected={sourceTab === 'upload'} onClick={() => setSourceTab('upload')}>Upload combat log</button></div>
-      {sourceTab === 'wcl' ? <>
+      <div className="source-tabs" role="tablist" aria-label="Log source"><button className={sourceTab === 'wcl' ? 'active' : ''} role="tab" aria-selected={sourceTab === 'wcl'} onClick={() => setSourceTab('wcl')}>Warcraft Logs</button><button className={sourceTab === 'upload' ? 'active' : ''} role="tab" aria-selected={sourceTab === 'upload'} onClick={() => setSourceTab('upload')}>Upload combat log</button><button className={sourceTab === 'live' ? 'active' : ''} role="tab" aria-selected={sourceTab === 'live'} onClick={() => setSourceTab('live')}>Live updates</button></div>
+      {sourceTab !== 'upload' ? <>
       <form className="report-form" onSubmit={analyzeReport}>
         <label htmlFor="report-url">REPORT URL</label>
         <div className="input-row"><input id="report-url" type="url" required value={reportUrl} onChange={(event) => setReportUrl(event.target.value)} placeholder="https://fresh.warcraftlogs.com/reports/…" /><button type="submit" disabled={submitting}>{submitting ? <LoaderCircle className="spin" size={15} /> : 'ANALYZE LOG'} {!submitting && <ArrowUpRight size={15} />}</button></div>
+        {sourceTab === 'live' && <div className="live-settings"><RefreshInterval value={refreshSeconds} onChange={setRefreshSeconds} /><p>Check an ongoing public report for new pulls as they reach Warcraft Logs. Keep this tab open; checks pause while it is in the background.</p></div>}
         {error && <p className="form-error" role="alert">{error}</p>}
       </form>
       <div className="panel-foot"><span>Paste a public Fresh report link to begin.</span><span>PRIVATE BY DESIGN</span></div></> : <>
@@ -562,13 +574,26 @@ function LocalDebuffBucket({ title, rows, duration }: { title: string; rows: Loc
 }
 
 function ReportPage({ code }: { code: string }) {
-  const report = useQuery({ queryKey: ['report', code], queryFn: () => fetchReport(code), retry: 1 })
-  const fights = useQuery({ queryKey: ['report-fights', code], queryFn: () => fetchFights(code), enabled: report.isSuccess, retry: 1 })
+  const [refreshSeconds, setRefreshSeconds] = useState(() => {
+    const seconds = Number(new URLSearchParams(window.location.search).get('refresh'))
+    return refreshIntervals.includes(seconds) ? seconds : 0
+  })
+  const live = refreshSeconds > 0
+  useEffect(() => {
+    const url = new URL(window.location.href)
+    if (refreshSeconds) url.searchParams.set('refresh', String(refreshSeconds))
+    else url.searchParams.delete('refresh')
+    window.history.replaceState(window.history.state, '', url)
+  }, [refreshSeconds])
+  const report = useQuery({ queryKey: ['report', code, live], queryFn: () => fetchReport(code, live), retry: 1, placeholderData: keepPreviousData, refetchInterval: live ? refreshSeconds * 1000 : false, refetchIntervalInBackground: false })
+  const fightsQuery = useQuery({ queryKey: ['report-fights', code], queryFn: () => fetchFights(code), enabled: report.isSuccess && !live, retry: 1 })
+  const fights = live ? { ...fightsQuery, data: report.data?.fights, isLoading: report.isLoading } : fightsQuery
   const [selectedFightId, setSelectedFightId] = useState<number | null>(null)
   const [benchmarkStrictness, setBenchmarkStrictness] = useState('balanced')
   const [benchmarkSource, setBenchmarkSource] = useState('recent')
   const analysisFightId = selectedFightId ?? report.data?.fights.find((fight) => fight.encounter_id > 0)?.fight_id ?? null
-  const analysis = useQuery({ queryKey: ['fight-analysis', code, analysisFightId], queryFn: () => fetchFightAnalysis(code, analysisFightId as number), enabled: analysisFightId !== null, retry: 1 })
+  const selectedFight = report.data?.fights.find((fight) => fight.fight_id === analysisFightId)
+  const analysis = useQuery({ queryKey: ['fight-analysis', code, analysisFightId, selectedFight], queryFn: () => fetchFightAnalysis(code, analysisFightId as number), enabled: analysisFightId !== null, retry: 1 })
   const effectiveBenchmarkSource = analysis.data?.fight.kill === false ? 'progression' : benchmarkSource
   const benchmarks = useQuery({ queryKey: ['fight-benchmarks', code, analysisFightId, benchmarkStrictness, effectiveBenchmarkSource], queryFn: () => fetchBenchmarks(code, analysisFightId as number, benchmarkStrictness, effectiveBenchmarkSource), enabled: analysisFightId !== null, retry: 1 })
   const playerStats = useMemo(() => analysis.data ? makePlayerStats(analysis.data) : [], [analysis.data])
@@ -585,8 +610,14 @@ function ReportPage({ code }: { code: string }) {
   return <main className="shell report-shell">
     <Header connected />
     <div className="report-back"><a href="/"><ArrowLeft size={14} /> ALL REPORTS</a><a href={`https://fresh.warcraftlogs.com/reports/${encodeURIComponent(code)}`} target="_blank" rel="noreferrer">OPEN IN WARCRAFT LOGS <ExternalLink size={13} /></a></div>
+    <section className="live-settings" aria-label="Report updates">
+      <RefreshInterval value={refreshSeconds} onChange={setRefreshSeconds} allowOff />
+      <span role="status">{report.isFetching ? 'Checking Warcraft Logs…' : report.dataUpdatedAt ? `Last loaded ${new Date(report.dataUpdatedAt).toLocaleTimeString()}` : 'Waiting for report'}</span>
+      {live && <p>Checks for new pulls while this tab is active. Your selected pull stays selected. Updates depend on the report uploader.</p>}
+      {report.isError && report.data && <p role="alert">Update failed. Showing the last loaded report. {live ? 'Will retry at the selected interval.' : ''}</p>}
+    </section>
     {report.isLoading && <section className="loading-panel"><LoaderCircle className="spin" size={18} /> FETCHING REPORT FROM FRESH WARCRAFT LOGS</section>}
-    {report.isError && <section className="error-panel"><CircleHelp size={18} /><div><h2>Report could not be loaded</h2><p>{report.error.message}</p><a href="/">Try another report <ArrowUpRight size={13} /></a></div></section>}
+    {report.isError && !report.data && <section className="error-panel"><CircleHelp size={18} /><div><h2>Report could not be loaded</h2><p>{report.error.message}</p><a href="/">Try another report <ArrowUpRight size={13} /></a></div></section>}
     {report.data && <>
       <section className="report-heading">
         <div className="eyebrow"><Activity size={14} /> REPORT / {report.data.code}</div>

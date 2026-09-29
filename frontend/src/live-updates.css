@@ -1,0 +1,4 @@
+.live-settings { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 16px 0; font-size: .75rem; }
+.live-interval { display: inline-flex; align-items: center; gap: 10px; }
+.live-settings p { flex-basis: 100%; margin: 0; line-height: 1.6; }
+.source-tabs { flex-wrap: wrap; }

@@ -8,6 +8,7 @@ hellotherelogs is a self-hosted Warcraft Logs Fresh raid analysis app, currently
 
 ## Current state
 
+- Optional Live updates mode checks a public WCL report every 30/60/120/300 seconds while the tab is active. The report page can change/disable the interval (stored in its URL), keeps the selected pull, and retains loaded data on background errors. `GET /reports/{code}?refresh=true` bypasses the overview cache, updates the shared fights cache, and invalidates analysis for changed fights; the UI keys selected analysis by fight metadata. Benchmark cohorts remain cached and are not polled. This requires an external uploader updating the same report; it does not upload game logs. Late event corrections without changed fight metadata still follow normal analysis cache expiry.
 - The React/TypeScript frontend lives in `frontend/`; the FastAPI backend lives in `backend/`.
 - Docker Compose serves the frontend through nginx on host port 8080 by default. Nginx proxies `/api` to FastAPI inside Compose. The root Compose file builds locally for development; `docker-compose.unraid.yml` pulls the published amd64 images from GHCR for server deployment.
 - `.github/workflows/publish-images.yml` builds backend and frontend images on pull requests and publishes them on pushes to `main` and version tags. Main builds publish `latest` and commit SHA tags. GHCR packages under the personal account default to private; an admin must explicitly make both packages public for anonymous Unraid pulls, or configure registry login on Unraid for private pulls.
@@ -70,6 +71,7 @@ The current review is a first functional data layer, not the finished guild coac
 
 ## Development and validation
 
+- Live updates: `docker compose build frontend backend` passed, and containerized `pytest -q tests` passed all 33 tests, including cache bypass, new fights, changed-analysis invalidation, and preservation after upstream failure. Local `.venv` collection lacks `python-multipart`; the container has the declared dependency. No browser or live-uploader verification was available in this session.
 - Fixed the report URL submit button staying busy after browser Back: submission state now clears on success/error and on back/forward-cache restoration. `docker compose build frontend` passed (TypeScript and Vite); browser Back behavior still needs manual verification in a browser.
 - Full stack: `docker compose up --build -d`; stop with `docker compose down`.
 - Backend tests: `cd backend && pytest`.
