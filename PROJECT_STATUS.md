@@ -70,6 +70,7 @@ The current review is a first functional data layer, not the finished guild coac
 
 ## Development and validation
 
+- Fixed the report URL submit button staying busy after browser Back: submission state now clears on success/error and on back/forward-cache restoration. `docker compose build frontend` passed (TypeScript and Vite); browser Back behavior still needs manual verification in a browser.
 - Full stack: `docker compose up --build -d`; stop with `docker compose down`.
 - Backend tests: `cd backend && pytest`.
 - Frontend build: `cd frontend && npm run build`.

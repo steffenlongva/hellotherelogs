@@ -464,6 +464,15 @@ function HomePage() {
   const [localError, setLocalError] = useState('')
   const [localLoading, setLocalLoading] = useState(false)
 
+  useEffect(() => {
+    function handlePageShow(event: PageTransitionEvent) {
+      // Back/forward cache restores React state without remounting the page.
+      if (event.persisted) setSubmitting(false)
+    }
+    window.addEventListener('pageshow', handlePageShow)
+    return () => window.removeEventListener('pageshow', handlePageShow)
+  }, [])
+
   async function analyzeReport(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setSubmitting(true)
@@ -473,6 +482,7 @@ function HomePage() {
       window.location.assign(`/reports/${encodeURIComponent(report_code)}`)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not read that report URL.')
+    } finally {
       setSubmitting(false)
     }
   }
