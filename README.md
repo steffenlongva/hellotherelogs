@@ -61,6 +61,8 @@ The encounter review can compare a selected kill against two public cohorts: **R
 
 ## Report workflow
 
+Live updates stop automatically after **2 hours** by default. Choose **Stop after** 30 minutes, 1 hour, 2 hours, or 4 hours before starting. Background time counts toward the deadline, which is saved in the report URL so reloading or reopening it does not restart polling. Changing the refresh interval does not extend the deadline. Choose **Off** to stop sooner; after stopping, choose a refresh interval to explicitly start a new timed session. Already loaded data stays visible.
+
 Choose **Live updates** to check an ongoing public report every 30 seconds, 1 minute (default), 2 minutes, or 5 minutes. Paste the report URL and choose **ANALYZE LOG**. The report page lets you change the interval or turn it **Off**, and preserves your selected pull while adding new fights. Checks pause in background tabs. Someone must be uploading to the same report through Warcraft Logs for new data to appear. Failed updates retain the last loaded report and retry at the selected interval. Live checks fetch a fresh overview instead of waiting for the normal server cache; benchmark comparisons retain their existing cache lifetime. The regular Warcraft Logs and file-upload tabs remain available.
 
 Paste a Fresh URL such as `https://fresh.warcraftlogs.com/reports/REPORTCODE`, choose **ANALYZE LOG**, then the app navigates to `/reports/REPORTCODE`. The backend validates the Fresh report URL, retrieves and normalizes report/fight data, and caches the JSON representations in SQLite for `CACHE_TTL_SECONDS` (default 900 seconds).
